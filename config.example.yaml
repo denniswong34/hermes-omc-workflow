@@ -1,0 +1,15 @@
+# Hermes OMC Workflow — Example Config
+# Copy fields from ~/.hermes/config.yaml → discord.channel_prompts
+
+omc:
+  adapter: discord  # discord | zulip | slack (switch via OMC_ADAPTER env)
+
+discord:
+  channel_prompts:
+    '1528310140564934708': "You are the PM Agent..."
+    '1528310312317751376': "You are the SA Agent..."
+    '1528310344164835389': "You are the Coder Agent..."
+    '1528310424536354866': "You are the QA Agent..."
+    '1528310499773648968': "You are the Marketing Agent..."
+    '1528336812177883167': "You are the PM Agent Daily Summary Bot..."
+  free_response_channels: "1528310140564934708,1528310312317751376,1528310344164835389,1528310424536354866,1528310499773648968,1528336812177883167"
