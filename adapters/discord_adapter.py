@@ -52,7 +52,6 @@ class DiscordAdapter(ChannelAdapter):
         async def on_message(msg):
             if self._msg_handler is None:
                 return
-            # Normalise into our Message type
             channel_name = self.name_by_id.get(str(msg.channel.id))
             norm = Message(
                 id=str(msg.id),
@@ -64,7 +63,11 @@ class DiscordAdapter(ChannelAdapter):
                 reply_to_id=str(msg.reference.message_id) if msg.reference else None,
                 channel_name=channel_name,
             )
-            await self._msg_handler(norm)
+            # Handler may be sync or async
+            if asyncio.iscoroutinefunction(self._msg_handler):
+                await self._msg_handler(norm)
+            else:
+                self._msg_handler(norm)
 
         @self.bot.event
         async def on_error(event, *args):

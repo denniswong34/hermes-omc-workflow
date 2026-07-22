@@ -105,8 +105,12 @@ async def main():
         task_mgr=task_mgr,
     )
 
-    # Wire message handler
-    adapter.on_message(lambda msg: asyncio.ensure_future(router.handle_message(msg)))
+    # Wire message handler (async wrapper)
+    async def _on_msg(msg):
+        logging.info(f"⚡ Message received: ch={msg.channel_name} author={msg.author_name} is_bot={msg.is_bot}")
+        await router.handle_message(msg)
+
+    adapter.on_message(_on_msg)
 
     # Log loaded config
     logging.info(f"Loaded {len(cfg['channel_prompts'])} agent prompts")
