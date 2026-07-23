@@ -1,55 +1,46 @@
 """
-SDLC Tracker — Plane.so State Machine Integration
-===================================================
-Detects status keywords in agent text and updates Plane.so issue states.
+SDLC Tracker — status detection + authority checks + ticket updates.
 """
+
+from __future__ import annotations
 
 import logging
 from typing import Optional
 
+from core.tickets.base import TicketTracker
+from core.tickets.status import SdlcStatus, detect_status
 
-# Map of status keywords → Plane.so state identifiers
-STATUS_KEYWORDS = {
-    # Workflow start
-    "todo": "bca3dcca-3f5a-4cca-89a9-96a70f701368",
-    "backlog": "bdb9eea6-3f5a-4cca-89a9-96a70f701368",
-    "in progress": "42be09bb-3f5a-4cca-89a9-96a70f701368",
-    "in review": "1fee841b-3f5a-4cca-89a9-96a70f701368",
-    # QA states
-    "qa review": "1fee841b-3f5a-4cca-89a9-96a70f701368",
-    "qa failed": "d30da6bc-3f5a-4cca-89a9-96a70f701368",
-    "rework": "d30da6bc-3f5a-4cca-89a9-96a70f701368",
-    "qa verified": "fe3d8d0a-3f5a-4cca-89a9-96a70f701368",
-    "qa passed": "fe3d8d0a-3f5a-4cca-89a9-96a70f701368",
-    # Done
-    "done": "e10793e2-3f5a-4cca-89a9-96a70f701368",
-    "completed": "e10793e2-3f5a-4cca-89a9-96a70f701368",
-}
+logger = logging.getLogger(__name__)
 
 
 class SDLCTracker:
-    """Tracks issue states via Plane.so API."""
+    """Applies detected status keywords to the configured ticket backend."""
 
-    def __init__(self, plane_api=None):
-        self.plane_api = plane_api
+    def __init__(
+        self,
+        tracker: Optional[TicketTracker] = None,
+        status_authority: Optional[dict[str, list[str]]] = None,
+    ):
+        self.tracker = tracker
+        self.status_authority = status_authority or {}
 
-    def detect_status(self, text: str) -> Optional[str]:
-        """Scan text for status keywords. Returns state_id or None."""
-        lower = text.lower()
-        for keyword, state_id in STATUS_KEYWORDS.items():
-            if keyword in lower:
-                return state_id
-        return None
+    def detect_status(self, text: str) -> Optional[SdlcStatus]:
+        return detect_status(text)
 
-    async def update_status(self, issue_id: str, state_id: str) -> bool:
-        """Update the state of a Plane.so issue."""
-        if self.plane_api is None:
-            logging.warning(f"SDLC: Would update {issue_id} → {state_id} (no Plane API)")
+    def allowed_for_channel(self, channel_name: str, status: SdlcStatus) -> bool:
+        """Return True if this channel role may update the board to `status`."""
+        allowed = self.status_authority.get(channel_name)
+        if allowed is None:
+            return True  # no policy configured → allow
+        display = status.display
+        return display in allowed or status.value in allowed
+
+    async def update_status(self, external_id: str, status: SdlcStatus) -> bool:
+        if self.tracker is None:
+            logger.warning(f"SDLC: Would update {external_id} → {status.display} (no tracker)")
             return False
         try:
-            result = await self.plane_api.update_issue_state(issue_id, state_id)
-            logging.info(f"SDLC: Updated {issue_id} → {state_id}")
-            return result
+            return await self.tracker.update_status(external_id, status)
         except Exception as e:
-            logging.error(f"SDLC update failed: {e}")
+            logger.error(f"SDLC update failed: {e}")
             return False

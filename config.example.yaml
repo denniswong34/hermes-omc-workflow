@@ -1,15 +1,28 @@
 # Hermes OMC Workflow — Example Config
-# Copy fields from ~/.hermes/config.yaml → discord.channel_prompts
+#
+# Prefer config/omc.yaml (loaded by default, or via OMC_CONFIG).
+# This file is a short reference of the schema.
 
 omc:
-  adapter: discord  # discord | zulip | slack (switch via OMC_ADAPTER env)
+  adapter: discord
+  agents_dir: agents
 
-discord:
-  channel_prompts:
-    '1528310140564934708': "You are the PM Agent..."
-    '1528310312317751376': "You are the SA Agent..."
-    '1528310344164835389': "You are the Coder Agent..."
-    '1528310424536354866': "You are the QA Agent..."
-    '1528310499773648968': "You are the Marketing Agent..."
-    '1528336812177883167': "You are the PM Agent Daily Summary Bot..."
-  free_response_channels: "1528310140564934708,1528310312317751376,1528310344164835389,1528310424536354866,1528310499773648968,1528336812177883167"
+channels:
+  pm: "1528310140564934708"
+  sa: "1528310312317751376"
+  coder: "1528310344164835389"
+  qa: "1528310424536354866"
+  devops: "REPLACE_WITH_DEVOPS_CHANNEL_ID"
+  marketing: "1528310499773648968"
+
+routes:
+  "#pm": ["#sa", "#devops", "#marketing"]
+  "#sa": ["#pm", "#coder", "#qa"]
+  "#coder": ["#sa", "#qa", "#devops"]
+  "#qa": ["#sa", "#coder", "#devops"]
+  "#devops": ["#pm", "#coder", "#qa"]
+  "#marketing": ["#pm"]
+
+tickets:
+  provider: none   # plane | jira | none
+  store_path: "~/.hermes/omc/task_map.json"

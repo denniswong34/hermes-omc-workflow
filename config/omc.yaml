@@ -1,0 +1,78 @@
+# Hermes OMC Workflow — Main Config
+# Override path with: OMC_CONFIG=/path/to/omc.yaml
+#
+# Channel IDs: replace placeholders with your Discord (or other) channel IDs.
+# DevOps needs a dedicated channel — create #devops and paste its ID below.
+
+omc:
+  adapter: discord  # discord | zulip | slack
+  agents_dir: agents  # relative to repo root, or absolute path
+
+channels:
+  # role → channel id
+  pm: "1528310140564934708"
+  sa: "1528310312317751376"
+  coder: "1528310344164835389"
+  qa: "1528310424536354866"
+  devops: "REPLACE_WITH_DEVOPS_CHANNEL_ID"
+  marketing: "1528310499773648968"
+
+# Who may @mention whom (channel names with #)
+routes:
+  "#pm": ["#sa", "#devops", "#marketing"]
+  "#sa": ["#pm", "#coder", "#qa"]
+  "#coder": ["#sa", "#qa", "#devops"]
+  "#qa": ["#sa", "#coder", "#devops"]
+  "#devops": ["#pm", "#coder", "#qa"]
+  "#marketing": ["#pm"]
+
+# Roles allowed to move the ticket board to these statuses
+status_authority:
+  "#pm": ["backlog", "todo", "done", "cancelled"]
+  "#sa": ["todo", "in progress"]
+  "#coder": ["in progress", "in review"]
+  "#qa": ["qa review", "qa failed", "qa verified", "ready to deploy"]
+  "#devops": ["ready to deploy", "deployed"]
+  "#marketing": []
+
+tickets:
+  provider: none  # plane | jira | none
+  store_path: "~/.hermes/omc/task_map.json"
+
+  plane:
+    base_url: "${PLANE_BASE_URL}"
+    workspace: "${PLANE_WORKSPACE}"
+    project_id: "${PLANE_PROJECT_ID}"
+    api_key: "${PLANE_API_KEY}"
+    # Map SdlcStatus value → Plane state UUID
+    status_map:
+      backlog: ""
+      todo: ""
+      in_progress: ""
+      in_review: ""
+      qa_review: ""
+      qa_failed: ""
+      qa_verified: ""
+      ready_to_deploy: ""
+      deployed: ""
+      done: ""
+      cancelled: ""
+
+  jira:
+    base_url: "${JIRA_BASE_URL}"
+    email: "${JIRA_EMAIL}"
+    api_token: "${JIRA_API_TOKEN}"
+    project_key: "${JIRA_PROJECT_KEY}"
+    # Map SdlcStatus value → Jira status name (for transitions)
+    status_map:
+      backlog: "Backlog"
+      todo: "To Do"
+      in_progress: "In Progress"
+      in_review: "In Review"
+      qa_review: "QA Review"
+      qa_failed: "QA Failed"
+      qa_verified: "QA Verified"
+      ready_to_deploy: "Ready to Deploy"
+      deployed: "Deployed"
+      done: "Done"
+      cancelled: "Cancelled"
