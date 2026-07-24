@@ -1,28 +1,51 @@
-# Hermes OMC Workflow — Example Config
-#
-# Prefer config/omc.yaml (loaded by default, or via OMC_CONFIG).
-# This file is a short reference of the schema.
+# Hermes OMC Workflow — Example Config (topic mode)
+# Copy to config/omc.yaml and set real channel IDs + OMC_WORKSPACE.
 
 omc:
   adapter: discord
   agents_dir: agents
 
-channels:
-  pm: "1528310140564934708"
-  sa: "1528310312317751376"
-  coder: "1528310344164835389"
-  qa: "1528310424536354866"
-  devops: "REPLACE_WITH_DEVOPS_CHANNEL_ID"
-  marketing: "1528310499773648968"
+topics:
+  product:
+    channel_id: "REPLACE_PRODUCT_CHANNEL_ID"
+    agents: [pm, sa]
+    ticket_create_roles: [pm, sa]
+  engineering:
+    channel_id: "REPLACE_ENGINEERING_CHANNEL_ID"
+    agents: [pm, sa, coder, qa, devops, hermes, claude, cursor, opencode]
+    ticket_create_roles: [pm, sa]
+  marketing:
+    channel_id: "REPLACE_MARKETING_CHANNEL_ID"
+    agents: [pm, marketing]
+    ticket_create_roles: [pm]
+  support:
+    channel_id: "REPLACE_SUPPORT_CHANNEL_ID"
+    agents: [pm, sa, coder, qa, hermes, claude, cursor, opencode]
+    ticket_create_roles: [pm, sa]
+  standup:
+    channel_id: "REPLACE_STANDUP_CHANNEL_ID"
+    agents: [standup]
+    ticket_create_roles: []
 
-routes:
-  "#pm": ["#sa", "#devops", "#marketing"]
-  "#sa": ["#pm", "#coder", "#qa"]
-  "#coder": ["#sa", "#qa", "#devops"]
-  "#qa": ["#sa", "#coder", "#devops"]
-  "#devops": ["#pm", "#coder", "#qa"]
-  "#marketing": ["#pm"]
+agent_routes:
+  pm: [sa, devops, marketing, coder]
+  sa: [pm, coder, qa]
+  coder: [sa, qa, devops]
+  qa: [sa, coder, devops]
+  devops: [pm, coder, qa]
+  marketing: [pm]
+  standup: []
+
+coding:
+  default: hermes
+  workspace: "${OMC_WORKSPACE}"
+  aliases:
+    coder: null
+    hermes: hermes
+    claude: claude
+    cursor: cursor
+    opencode: opencode
 
 tickets:
-  provider: none   # plane | jira | none
+  provider: none
   store_path: "~/.hermes/omc/task_map.json"

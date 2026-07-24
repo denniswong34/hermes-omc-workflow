@@ -1,39 +1,84 @@
-# Hermes OMC Workflow — Main Config
+# Hermes OMC Workflow — Topic-based config
 # Override path with: OMC_CONFIG=/path/to/omc.yaml
 #
-# Channel IDs: replace placeholders with your Discord (or other) channel IDs.
-# DevOps needs a dedicated channel — create #devops and paste its ID below.
+# Create Discord (or Slack/Zulip) topic channels and paste their IDs below.
+# Agents are @mentioned inside a topic — they do not each need their own channel.
 
 omc:
   adapter: discord  # discord | zulip | slack
-  agents_dir: agents  # relative to repo root, or absolute path
+  agents_dir: agents
 
-channels:
-  # role → channel id
-  pm: "1528310140564934708"
-  sa: "1528310312317751376"
-  coder: "1528310344164835389"
-  qa: "1528310424536354866"
-  devops: "REPLACE_WITH_DEVOPS_CHANNEL_ID"
-  marketing: "1528310499773648968"
+# SaaS topic rooms
+topics:
+  product:
+    channel_id: "REPLACE_PRODUCT_CHANNEL_ID"
+    agents: [pm, sa]
+    ticket_create_roles: [pm, sa]
+  engineering:
+    channel_id: "REPLACE_ENGINEERING_CHANNEL_ID"
+    agents: [pm, sa, coder, qa, devops, hermes, claude, cursor, opencode]
+    ticket_create_roles: [pm, sa]
+  marketing:
+    channel_id: "REPLACE_MARKETING_CHANNEL_ID"
+    agents: [pm, marketing]
+    ticket_create_roles: [pm]
+  support:
+    channel_id: "REPLACE_SUPPORT_CHANNEL_ID"
+    agents: [pm, sa, coder, qa, hermes, claude, cursor, opencode]
+    ticket_create_roles: [pm, sa]
+  standup:
+    channel_id: "REPLACE_STANDUP_CHANNEL_ID"
+    agents: [standup]
+    ticket_create_roles: []
 
-# Who may @mention whom (channel names with #)
-routes:
-  "#pm": ["#sa", "#devops", "#marketing"]
-  "#sa": ["#pm", "#coder", "#qa"]
-  "#coder": ["#sa", "#qa", "#devops"]
-  "#qa": ["#sa", "#coder", "#devops"]
-  "#devops": ["#pm", "#coder", "#qa"]
-  "#marketing": ["#pm"]
+# Who may @mention whom (role → roles), independent of topic
+agent_routes:
+  pm: [sa, devops, marketing, coder]
+  sa: [pm, coder, qa]
+  coder: [sa, qa, devops]
+  qa: [sa, coder, devops]
+  devops: [pm, coder, qa]
+  marketing: [pm]
+  standup: []
+  hermes: [sa, qa, devops]
+  claude: [sa, qa, devops]
+  cursor: [sa, qa, devops]
+  opencode: [sa, qa, devops]
 
-# Roles allowed to move the ticket board to these statuses
+# Roles allowed to move the ticket board
 status_authority:
-  "#pm": ["backlog", "todo", "done", "cancelled"]
-  "#sa": ["todo", "in progress"]
-  "#coder": ["in progress", "in review"]
-  "#qa": ["qa review", "qa failed", "qa verified", "ready to deploy"]
-  "#devops": ["ready to deploy", "deployed"]
-  "#marketing": []
+  pm: [backlog, todo, done, cancelled]
+  sa: [todo, in progress]
+  coder: [in progress, in review]
+  qa: [qa review, qa failed, qa verified, ready to deploy]
+  devops: [ready to deploy, deployed]
+  marketing: []
+  standup: []
+  hermes: [in progress, in review]
+  claude: [in progress, in review]
+  cursor: [in progress, in review]
+  opencode: [in progress, in review]
+
+# Pluggable coding backends (@Coder uses default; aliases map to a backend)
+coding:
+  default: hermes
+  workspace: "${OMC_WORKSPACE}"
+  backends:
+    hermes:
+      command: ["hermes", "-z"]
+      session_prefix: omc-coder
+    claude:
+      command: ["claude", "-p", "--output-format", "text"]
+    cursor:
+      command: ["agent"]
+    opencode:
+      command: ["opencode", "run"]
+  aliases:
+    hermes: hermes
+    claude: claude
+    cursor: cursor
+    opencode: opencode
+    coder: null   # null → use coding.default
 
 tickets:
   provider: none  # plane | jira | none
@@ -44,7 +89,6 @@ tickets:
     workspace: "${PLANE_WORKSPACE}"
     project_id: "${PLANE_PROJECT_ID}"
     api_key: "${PLANE_API_KEY}"
-    # Map SdlcStatus value → Plane state UUID
     status_map:
       backlog: ""
       todo: ""
@@ -63,7 +107,6 @@ tickets:
     email: "${JIRA_EMAIL}"
     api_token: "${JIRA_API_TOKEN}"
     project_key: "${JIRA_PROJECT_KEY}"
-    # Map SdlcStatus value → Jira status name (for transitions)
     status_map:
       backlog: "Backlog"
       todo: "To Do"

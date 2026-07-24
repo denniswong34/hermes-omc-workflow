@@ -1,7 +1,7 @@
 """
 Configuration Loader
 =====================
-Loads OMC channels, agent personas from agents/, routes, and ticket settings.
+Loads SaaS topic rooms, agent personas, routes, coding backends, and tickets.
 """
 
 from __future__ import annotations
@@ -15,24 +15,35 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-DEFAULT_ROUTES = {
-    "#pm": ["#sa", "#devops", "#marketing"],
-    "#sa": ["#pm", "#coder", "#qa"],
-    "#coder": ["#sa", "#qa", "#devops"],
-    "#qa": ["#sa", "#coder", "#devops"],
-    "#devops": ["#pm", "#coder", "#qa"],
-    "#marketing": ["#pm"],
+DEFAULT_AGENT_ROUTES = {
+    "pm": ["sa", "devops", "marketing", "coder"],
+    "sa": ["pm", "coder", "qa"],
+    "coder": ["sa", "qa", "devops"],
+    "qa": ["sa", "coder", "devops"],
+    "devops": ["pm", "coder", "qa"],
+    "marketing": ["pm"],
+    "standup": [],
+    "hermes": ["sa", "qa", "devops"],
+    "claude": ["sa", "qa", "devops"],
+    "cursor": ["sa", "qa", "devops"],
+    "opencode": ["sa", "qa", "devops"],
 }
 
 DEFAULT_STATUS_AUTHORITY = {
-    "#pm": ["backlog", "todo", "done", "cancelled"],
-    "#sa": ["todo", "in progress"],
-    "#coder": ["in progress", "in review"],
-    "#qa": ["qa review", "qa failed", "qa verified", "ready to deploy"],
-    "#devops": ["ready to deploy", "deployed"],
-    "#marketing": [],
+    "pm": ["backlog", "todo", "done", "cancelled"],
+    "sa": ["todo", "in progress"],
+    "coder": ["in progress", "in review"],
+    "qa": ["qa review", "qa failed", "qa verified", "ready to deploy"],
+    "devops": ["ready to deploy", "deployed"],
+    "marketing": [],
+    "standup": [],
+    "hermes": ["in progress", "in review"],
+    "claude": ["in progress", "in review"],
+    "cursor": ["in progress", "in review"],
+    "opencode": ["in progress", "in review"],
 }
 
+# Persona markdown files (coding aliases reuse coder.md when needed)
 ROLE_FILES = {
     "pm": "pm.md",
     "sa": "sa.md",
@@ -40,7 +51,14 @@ ROLE_FILES = {
     "qa": "qa.md",
     "devops": "devops.md",
     "marketing": "marketing.md",
+    "standup": "standup.md",
+    "hermes": "coder.md",
+    "claude": "coder.md",
+    "cursor": "coder.md",
+    "opencode": "coder.md",
 }
+
+CODING_ALIASES = {"coder", "hermes", "claude", "cursor", "opencode"}
 
 _ENV_PATTERN = re.compile(r"\$\{([^}]+)\}")
 
@@ -89,8 +107,32 @@ def load_agent_prompt(agents_dir: Path, role: str) -> str:
     return "\n\n---\n\n".join(parts)
 
 
+def _normalize_role(name: str) -> str:
+    return name.strip().lstrip("#@").lower()
+
+
+def _normalize_routes(raw_routes: dict | None) -> dict[str, list[str]]:
+    if not raw_routes:
+        return {k: list(v) for k, v in DEFAULT_AGENT_ROUTES.items()}
+    out: dict[str, list[str]] = {}
+    for src, targets in raw_routes.items():
+        key = _normalize_role(str(src))
+        out[key] = [_normalize_role(str(t)) for t in (targets or [])]
+    return out
+
+
+def _normalize_status_authority(raw: dict | None) -> dict[str, list[str]]:
+    if not raw:
+        return {k: list(v) for k, v in DEFAULT_STATUS_AUTHORITY.items()}
+    out: dict[str, list[str]] = {}
+    for role, statuses in raw.items():
+        key = _normalize_role(str(role))
+        out[key] = [str(s).strip().lower() for s in (statuses or [])]
+    return out
+
+
 def load_config(path: str | None = None) -> dict:
-    """Load OMC config and build channel prompts from agents/."""
+    """Load OMC topic config and build agent prompt map."""
     config_path = _resolve_config_path(path)
     if not config_path.exists():
         raise FileNotFoundError(f"Config not found: {config_path}")
@@ -100,49 +142,76 @@ def load_config(path: str | None = None) -> dict:
 
     raw = _expand_env(raw)
     omc = raw.get("omc", {})
-    channels = raw.get("channels", {})
-    if not channels:
-        raise ValueError("config.channels is required (role → channel id map)")
+    topics_raw = raw.get("topics") or {}
+    if not topics_raw:
+        raise ValueError("config.topics is required (topic → channel_id + agents)")
 
     agents_dir_cfg = omc.get("agents_dir", "agents")
     agents_dir = Path(agents_dir_cfg)
     if not agents_dir.is_absolute():
         agents_dir = (REPO_ROOT / agents_dir).resolve()
 
-    channel_names: dict[str, str] = {}
-    channel_prompts: dict[str, str] = {}
-    for role, channel_id in channels.items():
-        cid = str(channel_id).strip()
-        if not cid or cid.startswith("REPLACE_"):
-            # Allow missing devops id during setup; skip prompt until configured
-            if role == "devops":
-                continue
-            raise ValueError(f"Invalid channel id for role '{role}': {channel_id}")
-        name = f"#{role}"
-        channel_names[cid] = name
-        channel_prompts[cid] = load_agent_prompt(agents_dir, role)
+    topics: dict[str, dict] = {}
+    topic_by_channel_id: dict[str, str] = {}
+    channel_names: dict[str, str] = {}  # id → #topic
+    channel_by_name: dict[str, str] = {}  # #topic → id
+    all_roles: set[str] = set()
 
-    channel_by_name = {v: k for k, v in channel_names.items()}
-    agent_routes = raw.get("routes") or DEFAULT_ROUTES
-    # Drop routes to channels that are not configured
-    filtered_routes: dict[str, list[str]] = {}
-    for src, targets in agent_routes.items():
-        if src not in channel_by_name:
+    for topic_key, tcfg in topics_raw.items():
+        key = str(topic_key).strip().lower()
+        if not isinstance(tcfg, dict):
             continue
-        filtered_routes[src] = [t for t in targets if t in channel_by_name]
+        cid = str(tcfg.get("channel_id") or "").strip()
+        if not cid or cid.startswith("REPLACE_"):
+            # Skip unconfigured topics so the bridge can start partially
+            continue
+        agents = [_normalize_role(a) for a in (tcfg.get("agents") or [])]
+        ticket_roles = [
+            _normalize_role(a) for a in (tcfg.get("ticket_create_roles") or [])
+        ]
+        topics[key] = {
+            "key": key,
+            "channel_id": cid,
+            "agents": agents,
+            "ticket_create_roles": ticket_roles,
+            "default_agent": tcfg.get("default_agent"),
+        }
+        topic_by_channel_id[cid] = key
+        channel_names[cid] = f"#{key}"
+        channel_by_name[f"#{key}"] = cid
+        all_roles.update(agents)
 
-    status_authority = raw.get("status_authority") or DEFAULT_STATUS_AUTHORITY
-    free_channels = set(channel_names.keys())
+    if not topics:
+        raise ValueError(
+            "No topics have a real channel_id yet. "
+            "Edit config/omc.yaml and replace REPLACE_*_CHANNEL_ID values."
+        )
+
+    agent_prompts: dict[str, str] = {}
+    for role in sorted(all_roles):
+        if role in ROLE_FILES:
+            agent_prompts[role] = load_agent_prompt(agents_dir, role)
+
+    agent_routes = _normalize_routes(raw.get("agent_routes") or raw.get("routes"))
+    status_authority = _normalize_status_authority(raw.get("status_authority"))
+
+    coding = raw.get("coding") or {}
+    if not coding.get("workspace"):
+        coding = {**coding, "workspace": os.environ.get("OMC_WORKSPACE", "")}
 
     adapter = get_adapter_type(raw)
 
     return {
-        "channel_prompts": channel_prompts,
+        "topics": topics,
+        "topic_by_channel_id": topic_by_channel_id,
+        "agent_prompts": agent_prompts,
+        "agent_routes": agent_routes,
+        "status_authority": status_authority,
         "channel_names": channel_names,
         "channel_by_name": channel_by_name,
-        "agent_routes": filtered_routes,
-        "status_authority": status_authority,
-        "free_channels": free_channels,
+        "free_channels": set(channel_names.keys()),
+        "coding": coding,
+        "coding_aliases": set(CODING_ALIASES),
         "adapter": adapter,
         "tickets": raw.get("tickets", {"provider": "none"}),
         "agents_dir": str(agents_dir),

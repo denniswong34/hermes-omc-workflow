@@ -1,6 +1,8 @@
 # OMC SDLC — Shared Stage Definitions
 
 This One Man Company follows a standard software development lifecycle.
+Chat happens in topic rooms (`#product`, `#engineering`, `#marketing`, `#support`, `#standup`);
+agents are `@mentioned` in-channel. Tickets/status live in Jira or Plane.
 Every agent must use these **exact status keywords** when announcing a stage change
 (so ticket boards stay in sync).
 

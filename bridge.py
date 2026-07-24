@@ -2,12 +2,14 @@
 """
 Hermes OMC Workflow Bridge
 ===========================
-Multi-channel adapter for Hermes Agent SDLC workflow.
-Switchable between Discord, Zulip, Slack, etc.
+Topic-channel multi-agent SDLC bridge for Discord / Zulip / Slack.
+
+Boss @mentions agents in shared topic rooms (product, engineering, …).
+Handoffs stay in-channel. Tickets sync to Plane / Jira / none.
 
 Usage:
-    OMC_ADAPTER=discord python3 bridge.py    # Discord (default)
-    OMC_CONFIG=config/omc.yaml python3 bridge.py
+    OMC_ADAPTER=discord python bridge.py
+    OMC_CONFIG=config/omc.yaml OMC_WORKSPACE=/path/to/repo python bridge.py
 """
 
 from __future__ import annotations
@@ -21,8 +23,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from core.config import load_config
 from core.agent_router import AgentRouter
+from core.coding import create_coding_registry
+from core.config import load_config
 from core.sdlc_tracker import SDLCTracker
 from core.task_manager import TaskManager
 from core.tickets import create_tracker
@@ -82,7 +85,7 @@ async def main():
     )
 
     logging.info("=" * 50)
-    logging.info("HERMES OMC WORKFLOW BRIDGE")
+    logging.info("HERMES OMC WORKFLOW BRIDGE (topic mode)")
     logging.info("=" * 50)
 
     cfg = load_config()
@@ -92,8 +95,6 @@ async def main():
     logging.info(f"Agents dir: {cfg.get('agents_dir')}")
 
     adapter = create_adapter(adapter_type, cfg)
-    channel_names = cfg["channel_names"]
-    channel_by_name = cfg["channel_by_name"]
 
     tickets_cfg = cfg.get("tickets") or {}
     provider = (tickets_cfg.get("provider") or "none").strip().lower()
@@ -105,14 +106,16 @@ async def main():
         tracker=ticket_tracker,
         status_authority=cfg.get("status_authority") or {},
     )
+    coding = create_coding_registry(cfg.get("coding"))
 
     router = AgentRouter(
         adapter=adapter,
-        channel_prompts=cfg["channel_prompts"],
+        topics=cfg["topics"],
+        topic_by_channel_id=cfg["topic_by_channel_id"],
+        agent_prompts=cfg["agent_prompts"],
         agent_routes=cfg["agent_routes"],
-        channel_names=channel_names,
-        channel_by_name=channel_by_name,
-        free_channels=cfg["free_channels"],
+        channel_names=cfg["channel_names"],
+        coding=coding,
         sdlc=sdlc,
         task_mgr=task_mgr,
         ticket_tracker=ticket_tracker,
@@ -121,33 +124,29 @@ async def main():
 
     async def _on_msg(msg):
         logging.info(
-            f"⚡ Message received: ch={msg.channel_name} "
-            f"author={msg.author_name} is_bot={msg.is_bot}"
+            f"⚡ Message: ch={msg.channel_name} author={msg.author_name} "
+            f"is_bot={msg.is_bot}"
         )
         await router.handle_message(msg)
 
     adapter.on_message(_on_msg)
 
     logging.info(f"Ticket provider: {provider}")
-    logging.info(f"Loaded {len(cfg['channel_prompts'])} agent prompts")
-    for cid, prompt in cfg["channel_prompts"].items():
-        name = channel_names.get(cid, cid)
-        first = prompt.strip().split("\n")[0][:60]
-        logging.info(f"  {name:30s} → {first}")
-    logging.info("\nRoutes:")
+    logging.info(f"Coding default: {coding.default_key} workspace={coding.workspace or '(none)'}")
+    logging.info(f"Topics ({len(cfg['topics'])}):")
+    for key, t in cfg["topics"].items():
+        agents = ", ".join(t["agents"])
+        logging.info(f"  #{key:12s} id={t['channel_id']} agents=[{agents}]")
+    logging.info("Agent routes:")
     for src, targets in cfg["agent_routes"].items():
-        logging.info(f"  {src} → {', '.join(targets)}")
+        if targets:
+            logging.info(f"  @{src} → {', '.join('@' + x for x in targets)}")
 
-    shutdown_event = asyncio.Event()
-
-    def _signal_handler():
-        logging.info("Shutdown signal received.")
-        shutdown_event.set()
-
-    loop = asyncio.get_event_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
-            loop.add_signal_handler(sig, _signal_handler)
+            asyncio.get_event_loop().add_signal_handler(
+                sig, lambda: logging.info("Shutdown signal received.")
+            )
         except NotImplementedError:
             pass
 

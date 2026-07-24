@@ -1,166 +1,122 @@
 # Hermes OMC Workflow Bridge
 
-**One Man Company (OMC) SDLC automation** — Boss talks to the PM agent; PM orchestrates SA, Coder, QA, DevOps, and Marketing via cross-channel `@mentions`.
+**One Man Company (OMC)** — Boss talks in SaaS **topic channels** and `@mentions` agents.
+Agents hand off to each other **in the same channel**. Tickets live in Plane / Jira.
 
-## Company flow
+## Topic rooms (defaults)
+
+| Channel | Purpose | Who you can @ |
+|---------|---------|----------------|
+| `#product` | Roadmap / ideas | `@PM` `@SA` |
+| `#engineering` | Spec → code → QA → deploy | `@PM` `@SA` `@Coder` `@QA` `@DevOps` (+ coding aliases) |
+| `#marketing` | Launch / GTM | `@PM` `@Marketing` |
+| `#support` | Customer bugs | `@PM` `@SA` `@Coder` `@QA` |
+| `#standup` | Digests | `@Standup` |
+
+Set Discord (or Slack/Zulip) channel IDs in [`config/omc.yaml`](config/omc.yaml).
+
+## How conversation works
 
 ```
-Boss (human)
-  └─ #pm  (Product Manager)
-        ├─ @sa:        → #sa     (Systems Analyst / Architect)
-        │                 ├─ @coder: → #coder
-        │                 └─ @qa:    → #qa
-        ├─ @devops:    → #devops (Release / Deploy)
-        └─ @marketing: → #marketing (GTM after deploy)
+#engineering
+You:  @PM Please help me start to implement login for saas
+PM:   **[@PM]** Creating TASK-014 … Status: todo
+      @SA Please complete analysis/spec for login …
+SA:   **[@SA]** Spec ready. Status: in progress
+      @Coder Follow the spec and implement …
+Coder:**[@Coder]** … Status: in review
+      @QA Ready for qa review …
 ```
 
-Happy path statuses:
+- **Trigger:** explicit `@Agent` only (no silent auto-replies).
+- **Handoffs:** same channel via `@SA:` / `@Coder:` lines — not separate role channels.
+- **Tracking:** status keywords update Plane/Jira/`none` TASK map.
 
-`backlog` → `todo` → `in progress` → `in review` → `qa review` → `qa verified` → `ready to deploy` → `deployed` → `done`
+## Coding backends
 
-## Agent roster
+In `#engineering` / `#support`:
 
-| Channel | Role | Boss-facing |
-|---------|------|-------------|
-| `#pm` | Product Manager | Yes — only entry point |
-| `#sa` | Systems Analyst / Solution Architect | No |
-| `#coder` | Software Engineer | No |
-| `#qa` | QA Engineer | No |
-| `#devops` | DevOps / Release | No |
-| `#marketing` | Go-to-market | No |
+| Mention | Backend |
+|---------|---------|
+| `@Coder` | `coding.default` (usually Hermes) |
+| `@Hermes` | Hermes CLI |
+| `@Claude` | Claude Code CLI |
+| `@Cursor` | Cursor `agent` CLI |
+| `@OpenCode` | OpenCode CLI |
 
-Personas live in version-controlled markdown under [`agents/`](agents/) (plus shared SDLC + handoff rules in `agents/_shared/`).
+```yaml
+coding:
+  default: hermes
+  workspace: "${OMC_WORKSPACE}"
+```
+
+```bash
+export OMC_WORKSPACE=/path/to/your/saas/repo
+```
+
+Install the CLI you want on `PATH`. Missing tools return a clear error in-channel.
 
 ## Quick start
 
 ```bash
 pip install -r requirements.txt
 
-# 1. Create a Discord #devops channel and set its ID in config/omc.yaml
-# 2. Ensure DISCORD_BOT_TOKEN is in ~/.hermes/.env
-# 3. Run
+# 1. Create topic channels; paste IDs into config/omc.yaml
+# 2. DISCORD_BOT_TOKEN in ~/.hermes/.env
+# 3. Optional: OMC_WORKSPACE, Plane/Jira env vars
 python bridge.py
-
-# Optional overrides
-OMC_CONFIG=config/omc.yaml OMC_ADAPTER=discord python bridge.py
 ```
 
-## Configuration
-
-Default config: [`config/omc.yaml`](config/omc.yaml) (override with `OMC_CONFIG`).
-
-- **`channels`** — role → Discord channel id (fill in `devops`)
-- **`routes`** — who may `@mention` whom
-- **`status_authority`** — which roles may move the ticket board
-- **`tickets.provider`** — `none` | `plane` | `jira`
-
-Agent prompts are built at runtime from `agents/_shared/*.md` + `agents/{role}.md`.
-
-## Cross-agent handoffs
-
-Agents start a line with `@channel: message`. The bridge forwards it automatically.
-
-```
-@sa: TASK-001 — produce a spec for password reset. Status: todo
+```bash
+OMC_CONFIG=config/omc.yaml OMC_ADAPTER=discord OMC_WORKSPACE=$PWD python bridge.py
 ```
 
-Example chain:
-
-1. Boss → `#pm`: “Add password reset”
-2. PM → `@sa:` with `todo`
-3. SA → `@coder:` + `@qa:` with spec / acceptance criteria
-4. Coder → `@qa:` with `in review`
-5. QA → `@devops:` with `qa verified` / `ready to deploy`
-6. DevOps → `@pm:` with `deployed`
-7. PM → Boss (`done`) and optionally `@marketing:`
-
-## Ticket tracking (pluggable)
-
-Set in `config/omc.yaml`:
+## Tickets
 
 ```yaml
 tickets:
   provider: none   # or plane | jira
 ```
 
-### none
-
-Local `TASK-NNN` ids only (stored under `~/.hermes/omc/task_map.json`). No external API.
-
-### Plane.so
-
-```yaml
-tickets:
-  provider: plane
-  plane:
-    base_url: "${PLANE_BASE_URL}"
-    workspace: "${PLANE_WORKSPACE}"
-    project_id: "${PLANE_PROJECT_ID}"
-    api_key: "${PLANE_API_KEY}"
-    status_map:
-      todo: "<plane-state-uuid>"
-      in_progress: "<uuid>"
-      # ... see config/omc.yaml for full keys
-```
-
-Env vars: `PLANE_BASE_URL`, `PLANE_WORKSPACE`, `PLANE_PROJECT_ID`, `PLANE_API_KEY`.
-
-### Jira Cloud
-
-```yaml
-tickets:
-  provider: jira
-  jira:
-    base_url: "${JIRA_BASE_URL}"
-    email: "${JIRA_EMAIL}"
-    api_token: "${JIRA_API_TOKEN}"
-    project_key: "${JIRA_PROJECT_KEY}"
-    status_map:
-      todo: "To Do"
-      in_progress: "In Progress"
-      # ...
-```
-
-Env vars: `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_PROJECT_KEY`.
-
-Status updates from agent text are applied only if the emitting role is allowed (see `status_authority`).
+See `config/omc.yaml` for Plane/Jira `status_map` and env placeholders (`PLANE_*`, `JIRA_*`).
 
 ## Architecture
 
 ```
-User / Agent message
+Boss message in #engineering
        │
        ▼
 ChannelAdapter (Discord / Zulip / Slack)
        │
        ▼
 AgentRouter
-  • Load persona from agents/
-  • Create / reference TASK-NNN
-  • Call hermes CLI
-  • Parse @mentions → forward
-  • Detect status → TicketTracker
-       │
-       ├─ PlaneTracker
-       ├─ JiraTracker
-       └─ NullTracker
+  • Resolve topic from channel id
+  • Parse @PM / @SA / @Coder …
+  • Persona from agents/*.md
+  • CodingBackend for coder aliases
+  • Same-channel handoff chain
+  • TicketTracker (Plane / Jira / none)
 ```
 
-## Discord channel checklist
+Personas: [`agents/`](agents/) (+ [`agents/_shared/`](agents/_shared/)).
 
-1. `#pm`, `#sa`, `#coder`, `#qa`, `#marketing` (existing IDs in config)
-2. Create `#devops` and paste its channel ID into `config/omc.yaml` → `channels.devops`
-3. Invite the bot to all agent channels with message content intent enabled
+## Agent roster
 
-## Adapter pattern
-
-Implement `ChannelAdapter` in `adapters/`, register in `bridge.py`, set `OMC_ADAPTER`.
+| Mention | Role |
+|---------|------|
+| `@PM` | Product Manager |
+| `@SA` | Systems Analyst / Architect |
+| `@Coder` | Software Engineer (default coding backend) |
+| `@QA` | QA |
+| `@DevOps` | Release / deploy |
+| `@Marketing` | GTM |
+| `@Standup` | Digest bot |
+| `@Hermes` `@Claude` `@Cursor` `@OpenCode` | Direct coding CLIs |
 
 ## Roadmap
 
-- [x] Discord adapter
-- [x] In-repo agent personas + SDLC handoffs
+- [x] Topic channels + in-channel @mentions
 - [x] Pluggable tickets (Plane / Jira / none)
-- [ ] Zulip adapter (implemented; verify end-to-end)
-- [ ] Slack adapter
-- [ ] Telegram adapter
+- [x] Pluggable coding backends (Hermes / Claude / Cursor / OpenCode)
+- [ ] Zulip end-to-end verification
+- [ ] Slack adapter completion
