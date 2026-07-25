@@ -1,105 +1,143 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { apiGet, apiPut } from "@/lib/api";
 
-type ConfigResp = { path: string; data: Record<string, unknown> };
+type Wf = { id: string; name: string; is_active: boolean };
+type Field = { key: string; label: string };
+type SecretsResp = {
+  path: string;
+  keys: string[];
+  fields: Field[];
+  platforms: string[];
+};
 
 export default function ConnectionsPage() {
-  const [cfg, setCfg] = useState<ConfigResp | null>(null);
-  const [jsonText, setJsonText] = useState("");
-  const [secrets, setSecrets] = useState("");
+  const [workflows, setWorkflows] = useState<Wf[]>([]);
+  const [wfId, setWfId] = useState("");
+  const [fields, setFields] = useState<Field[]>([]);
+  const [keys, setKeys] = useState<string[]>([]);
+  const [path, setPath] = useState("");
+  const [platforms, setPlatforms] = useState<string[]>([]);
+  const [values, setValues] = useState<Record<string, string>>({});
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
+
+  async function loadSecrets(id: string) {
+    const s = await apiGet<SecretsResp>(`/api/workflows/${id}/secrets`);
+    setPath(s.path);
+    setKeys(s.keys);
+    setFields(s.fields);
+    setPlatforms(s.platforms);
+    const init: Record<string, string> = {};
+    for (const f of s.fields) {
+      init[f.key] = s.keys.includes(f.key) ? "(stored — leave blank to keep)" : "";
+    }
+    setValues(init);
+  }
 
   useEffect(() => {
     (async () => {
       try {
-        const c = await apiGet<ConfigResp>("/api/config");
-        setCfg(c);
-        setJsonText(JSON.stringify(c.data, null, 2));
-        const s = await apiGet<{ keys: string[]; path: string }>("/api/secrets");
-        setSecrets(s.keys.map((k) => `${k}=`).join("\n"));
+        const w = await apiGet<{ workflows: Wf[] }>("/api/workflows");
+        setWorkflows(w.workflows);
+        const first = w.workflows.find((x) => x.is_active) || w.workflows[0];
+        if (first) {
+          setWfId(first.id);
+          await loadSecrets(first.id);
+        }
       } catch (e) {
         setErr(e instanceof Error ? e.message : String(e));
       }
     })();
   }, []);
 
-  async function saveConfig() {
-    setMsg("");
-    try {
-      const data = JSON.parse(jsonText);
-      await apiPut("/api/config", { data });
-      setMsg("Config saved.");
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    }
-  }
-
-  async function saveSecrets() {
+  async function save() {
+    if (!wfId) return;
+    setErr("");
     setMsg("");
     const entries: Record<string, string> = {};
-    for (const line of secrets.split("\n")) {
-      const t = line.trim();
-      if (!t || t.startsWith("#") || !t.includes("=")) continue;
-      const [k, ...rest] = t.split("=");
-      if (k.trim()) entries[k.trim()] = rest.join("=");
+    for (const [k, v] of Object.entries(values)) {
+      if (!v || v.startsWith("(stored")) continue;
+      entries[k] = v;
+    }
+    if (!Object.keys(entries).length) {
+      setMsg("Nothing to update (blank fields keep existing values).");
+      return;
     }
     try {
-      await apiPut("/api/secrets", { entries });
-      setMsg("Secrets saved (values write-only).");
+      const res = await apiPut<SecretsResp>(`/api/workflows/${wfId}/secrets`, { entries });
+      setKeys(res.keys);
+      setMsg("Secrets saved for this workflow.");
+      await loadSecrets(wfId);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     }
   }
-
-  const data = cfg?.data || {};
-  const omc = (data.omc || {}) as Record<string, unknown>;
-  const topics = (data.topics || {}) as Record<string, unknown>;
-  const coding = (data.coding || {}) as Record<string, unknown>;
-  const memory = (data.memory || {}) as Record<string, unknown>;
-  const tickets = (data.tickets || {}) as Record<string, unknown>;
 
   return (
     <div>
-      <h1>Connections</h1>
+      <h1>Secrets</h1>
       <p className="muted">
-        Adapter, topics, tickets, coding backends, memory. Edits write to{" "}
-        <code>{cfg?.path || "config/omc.yaml"}</code>.
+        Each workflow has its own secrets file. Fields follow the chat platforms configured on that
+        workflow. Manage platforms under{" "}
+        <Link href="/workflows">Workflows</Link>.
       </p>
       {err && <div className="panel error">{err}</div>}
       {msg && <div className="panel">{msg}</div>}
 
-      <div className="grid grid-2">
-        <div className="panel">
-          <h2>Summary</h2>
-          <p>Adapter: {String(omc.adapter || "—")}</p>
-          <p>Topics: {Object.keys(topics).join(", ") || "—"}</p>
-          <p>Tickets: {String(tickets.provider || "—")}</p>
-          <p>Coding default: {String(coding.default || "—")}</p>
-          <p>Memory: {String(memory.provider || "—")}</p>
-        </div>
-        <div className="panel">
-          <h2>Secrets (.env style)</h2>
-          <p className="muted">DISCORD_BOT_TOKEN, PLANE_*, JIRA_*, OMC_WORKSPACE, OMC_OBSIDIAN_VAULT…</p>
-          <textarea rows={8} value={secrets} onChange={(e) => setSecrets(e.target.value)} />
-          <p style={{ marginTop: "0.75rem" }}>
-            <button type="button" onClick={saveSecrets}>
-              Save secrets
-            </button>
-          </p>
-        </div>
+      <div className="panel">
+        <label>
+          Workflow{" "}
+          <select
+            value={wfId}
+            onChange={async (e) => {
+              setWfId(e.target.value);
+              try {
+                await loadSecrets(e.target.value);
+              } catch (ex) {
+                setErr(ex instanceof Error ? ex.message : String(ex));
+              }
+            }}
+          >
+            {workflows.map((w) => (
+              <option key={w.id} value={w.id}>
+                {w.name}
+                {w.is_active ? " ●" : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+        <p className="muted" style={{ marginTop: "0.5rem" }}>
+          File: <code>{path || "—"}</code>
+          <br />
+          Platforms: {platforms.join(", ") || "—"}
+        </p>
       </div>
 
-      <div className="panel">
-        <h2>Full config (JSON)</h2>
-        <textarea rows={22} value={jsonText} onChange={(e) => setJsonText(e.target.value)} />
-        <p style={{ marginTop: "0.75rem" }}>
-          <button type="button" onClick={saveConfig}>
-            Save config
-          </button>
-        </p>
+      <div className="panel" style={{ marginTop: "1rem" }}>
+        {fields.length === 0 ? (
+          <p className="muted">Select a workflow.</p>
+        ) : (
+          fields.map((f) => (
+            <label key={f.key} style={{ display: "block", marginBottom: "0.75rem" }}>
+              {f.label}
+              <br />
+              <input
+                type="password"
+                autoComplete="off"
+                style={{ width: "100%" }}
+                value={values[f.key] || ""}
+                onChange={(e) => setValues({ ...values, [f.key]: e.target.value })}
+                placeholder={keys.includes(f.key) ? "stored" : "not set"}
+              />
+            </label>
+          ))
+        )}
+        <button type="button" onClick={save} disabled={!wfId}>
+          Save secrets
+        </button>
       </div>
     </div>
   );

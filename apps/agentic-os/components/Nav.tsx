@@ -2,10 +2,12 @@ import Link from "next/link";
 
 const LINKS = [
   { href: "/", label: "Overview" },
-  { href: "/connections", label: "Connections" },
-  { href: "/agents", label: "Agents" },
+  { href: "/workflows", label: "Workflows" },
+  { href: "/mcp", label: "MCP Marketplace" },
+  { href: "/agents", label: "Personas" },
   { href: "/memory", label: "Memory" },
   { href: "/kanban", label: "Kanban" },
+  { href: "/connections", label: "Secrets" },
 ];
 
 export function Nav() {

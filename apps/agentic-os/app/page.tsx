@@ -1,48 +1,73 @@
 import { apiGet } from "@/lib/api";
+import Link from "next/link";
 
 export const dynamic = "force-dynamic";
 
+type Wf = {
+  id: string;
+  name: string;
+  is_active: boolean;
+  reasoning_engine: string;
+  memory_provider: string;
+};
+
 export default async function HomePage() {
-  let health: { ok?: boolean } = {};
-  let memory: { ok?: boolean; provider?: string; tasks?: number } = {};
-  let bridge: { running?: boolean; message?: string } = {};
+  let health: { ok?: boolean; active_workflows?: number } = {};
+  let workflows: Wf[] = [];
+  let runtime: { channel_index?: unknown[] } = {};
   let err = "";
   try {
     health = await apiGet("/api/health");
-    memory = await apiGet("/api/memory/health");
-    bridge = await apiGet("/api/bridge/status");
+    const w = await apiGet<{ workflows: Wf[] }>("/api/workflows");
+    workflows = w.workflows || [];
+    runtime = await apiGet("/api/runtime/status");
   } catch (e) {
     err = e instanceof Error ? e.message : String(e);
   }
+
+  const active = workflows.filter((w) => w.is_active);
 
   return (
     <div>
       <h1>Overview</h1>
       <p className="muted">
-        Control plane for OMC topics, agents, coding backends, Obsidian memory, and Kanban.
+        Multi-workflow control plane — activate several SDLC companies, pick reasoning engines, enable MCP tools.
       </p>
       {err ? (
         <div className="panel error">
-          API unreachable ({err}). Start with{" "}
-          <code>python -m apps.api.main</code> on port 8787.
+          API unreachable ({err}). Start with <code>python -m apps.api.main</code> on port 8787.
         </div>
       ) : (
-        <div className="grid grid-2">
-          <div className="panel">
-            <h2>API</h2>
-            <p>Status: {health.ok ? "healthy" : "down"}</p>
+        <>
+          <div className="grid grid-2">
+            <div className="panel">
+              <h2>API</h2>
+              <p>Status: {health.ok ? "healthy" : "down"}</p>
+              <p>Active workflows: {health.active_workflows ?? active.length}</p>
+            </div>
+            <div className="panel">
+              <h2>Channel map</h2>
+              <p>{(runtime.channel_index || []).length} owned channel(s)</p>
+            </div>
           </div>
-          <div className="panel">
-            <h2>Memory</h2>
-            <p>Provider: {memory.provider || "none"}</p>
-            <p>Vault OK: {String(memory.ok)}</p>
-            <p>Tasks: {memory.tasks ?? 0}</p>
-          </div>
-          <div className="panel">
-            <h2>Bridge</h2>
-            <p>{bridge.message || (bridge.running ? "running" : "stopped")}</p>
-          </div>
-        </div>
+          <h2 style={{ marginTop: "1.5rem" }}>Active workflows</h2>
+          {active.length === 0 ? (
+            <p className="muted">
+              None active. <Link href="/workflows">Activate or clone SDLC Workflow</Link>
+            </p>
+          ) : (
+            <ul>
+              {active.map((w) => (
+                <li key={w.id}>
+                  <Link href={`/workflows/${w.id}`}>
+                    {w.name}
+                  </Link>{" "}
+                  — engine <code>{w.reasoning_engine}</code>, memory <code>{w.memory_provider}</code>
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
       )}
     </div>
   );

@@ -1,0 +1,745 @@
+"""Workflow / MCP / engines / cron API routes."""
+
+from __future__ import annotations
+
+from typing import Any, Optional
+
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
+
+from core.cron import get_cron_scheduler
+from core.db import get_db, new_id, _json, _now
+from core.db import REPO_ROOT
+from core.engines import ENGINE_IDS, list_engines
+from core.mcp import McpCatalog
+from core.memory import build_memory_store
+from core.chat_test import test_chat_connection
+from core.tracking_test import test_tracking_connection
+from core.secrets import (
+    PLATFORMS,
+    TRACKING_CONNECTION_FIELDS,
+    TRACKING_PROVIDERS,
+    enrich_chat_connection,
+    enrich_tracking_connection,
+    get_workflow_secrets,
+    resolve_chat_secrets,
+    resolve_tracking_secrets,
+    save_chat_connection,
+    save_tracking_connection,
+    secret_fields_for_platforms,
+    update_workflow_secrets,
+)
+from core.workflow import get_pool, reload_pool
+from core.workflow.repository import ChannelConflictError, WorkflowRepository
+
+router = APIRouter()
+
+
+def _repo() -> WorkflowRepository:
+    db = get_db()
+    repo = WorkflowRepository(db)
+    repo.ensure_seeded()
+    return repo
+
+
+class ActivateBody(BaseModel):
+    active: bool
+
+
+class WorkflowPatch(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    reasoning_engine: Optional[str] = None
+    coding_default: Optional[str] = None
+    coding_workspace: Optional[str] = None
+    memory_provider: Optional[str] = None
+    memory_config: Optional[dict[str, Any]] = None
+    tracking_provider: Optional[str] = None
+    tracking_config: Optional[dict[str, Any]] = None
+    routes: Optional[dict[str, list[str]]] = None
+    status_authority: Optional[dict[str, list[str]]] = None
+    playbooks: Optional[dict[str, list[str]]] = None
+
+
+class CloneBody(BaseModel):
+    name: str
+    template_id: str = "tpl-sdlc"
+
+
+class SaveTemplateBody(BaseModel):
+    name: str
+    description: str = ""
+
+
+class AgentPatch(BaseModel):
+    display_name: Optional[str] = None
+    mention: Optional[str] = None
+    kind: Optional[str] = None
+    persona_file: Optional[str] = None
+    reasoning_engine: Optional[str] = None
+    coding_backend: Optional[str] = None
+    tools: Optional[list[str]] = None
+    mcp_allowlist: Optional[list[str]] = None
+
+
+class AgentCreate(BaseModel):
+    role_id: str
+    display_name: str = ""
+    mention: str = ""
+    kind: str = "persona"
+    persona_file: str = ""
+    reasoning_engine: Optional[str] = None
+    coding_backend: Optional[str] = None
+    tools: list[str] = Field(default_factory=list)
+    mcp_allowlist: list[str] = Field(default_factory=list)
+    create_persona_file: bool = True
+
+
+class ChatCreate(BaseModel):
+    platform: str = "discord"
+    label: str = ""
+    config: dict[str, Any] = Field(default_factory=dict)
+    secrets: dict[str, str] = Field(default_factory=dict)
+
+
+class ChatPatch(BaseModel):
+    platform: Optional[str] = None
+    label: Optional[str] = None
+    config: Optional[dict[str, Any]] = None
+    secrets: Optional[dict[str, str]] = None
+
+
+class ChatTestBody(BaseModel):
+    """Optional draft credentials from the dialog (unsaved form values)."""
+    platform: Optional[str] = None
+    config: dict[str, str] = Field(default_factory=dict)
+    secrets: dict[str, str] = Field(default_factory=dict)
+
+
+class TrackingUpsert(BaseModel):
+    provider: str
+    label: str = ""
+    config: dict[str, str] = Field(default_factory=dict)
+    secrets: dict[str, str] = Field(default_factory=dict)
+
+
+class TrackingTestBody(BaseModel):
+    """Optional draft credentials from the tracking dialog."""
+    provider: Optional[str] = None
+    config: dict[str, str] = Field(default_factory=dict)
+    secrets: dict[str, str] = Field(default_factory=dict)
+
+
+class ChannelCreate(BaseModel):
+    name: str
+    chat_id: Optional[str] = None
+    external_id: str = ""
+    agents: list[str] = Field(default_factory=list)
+    ticket_create_roles: list[str] = Field(default_factory=list)
+
+
+class ChannelPatch(BaseModel):
+    external_id: Optional[str] = None
+    agents: Optional[list[str]] = None
+    ticket_create_roles: Optional[list[str]] = None
+    chat_id: Optional[str] = None
+
+
+class SecretsUpdate(BaseModel):
+    entries: dict[str, str] = Field(default_factory=dict)
+
+
+class McpAddBody(BaseModel):
+    name: str
+    description: str = ""
+    transport: str = "stdio"
+    command: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+    docs_url: str = ""
+
+
+class McpEnableBody(BaseModel):
+    catalog_id: str
+    enabled: bool = True
+    config: dict[str, Any] = Field(default_factory=dict)
+
+
+class CronBody(BaseModel):
+    name: str
+    cron_expr: str
+    agent_role: str
+    channel_name: str
+    prompt: str = ""
+    enabled: bool = True
+
+
+@router.get("/api/workflows")
+def list_workflows():
+    return {"workflows": _repo().list_workflows()}
+
+
+@router.get("/api/workflows/active")
+def list_active():
+    return {"workflows": [w.to_dict() for w in _repo().list_active()]}
+
+
+def _workflow_payload(workflow_id: str, wf) -> dict[str, Any]:
+    data = wf.to_dict()
+    data["chats"] = [
+        enrich_chat_connection(workflow_id, c) for c in data.get("chats") or []
+    ]
+    data["tracking"] = enrich_tracking_connection(
+        workflow_id,
+        data.get("tracking_provider") or "none",
+        data.get("tracking_config") or {},
+    )
+    return data
+
+
+@router.get("/api/workflows/{workflow_id}")
+def get_workflow(workflow_id: str):
+    wf = _repo().get_workflow(workflow_id)
+    if not wf:
+        raise HTTPException(404, "Workflow not found")
+    return _workflow_payload(workflow_id, wf)
+
+
+@router.patch("/api/workflows/{workflow_id}")
+def patch_workflow(workflow_id: str, body: WorkflowPatch):
+    patch = {k: v for k, v in body.model_dump().items() if v is not None}
+    if "reasoning_engine" in patch and patch["reasoning_engine"] not in ENGINE_IDS:
+        raise HTTPException(400, f"Invalid engine. Choose from {ENGINE_IDS}")
+    try:
+        wf = _repo().update_workflow(workflow_id, patch)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    return _workflow_payload(workflow_id, wf)
+
+
+@router.post("/api/workflows/{workflow_id}/activate")
+def activate_workflow(workflow_id: str, body: ActivateBody):
+    repo = _repo()
+    try:
+        wf = repo.set_active(workflow_id, body.active)
+    except ChannelConflictError as e:
+        raise HTTPException(409, {"message": str(e), "conflicts": e.conflicts})
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    pool = reload_pool()
+    cron = get_cron_scheduler()
+    cron.sync_from_workflows([r.workflow for r in pool.runtimes.values()])
+    return wf.to_dict()
+
+
+@router.post("/api/workflows/clone")
+def clone_workflow(body: CloneBody):
+    try:
+        wf = _repo().clone_from_template(body.template_id, body.name)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    return wf.to_dict()
+
+
+@router.post("/api/workflows/{workflow_id}/save-template")
+def save_template(workflow_id: str, body: SaveTemplateBody):
+    try:
+        return _repo().save_as_template(workflow_id, body.name, body.description)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+
+
+@router.get("/api/templates")
+def list_templates():
+    return {"templates": _repo().list_templates()}
+
+
+@router.patch("/api/workflows/{workflow_id}/agents/{agent_id}")
+def patch_agent(workflow_id: str, agent_id: str, body: AgentPatch):
+    patch = {k: v for k, v in body.model_dump().items() if v is not None}
+    try:
+        return _repo().update_agent(agent_id, patch)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.post("/api/workflows/{workflow_id}/agents")
+def create_agent(workflow_id: str, body: AgentCreate):
+    from pathlib import Path
+
+    data = body.model_dump()
+    create_file = data.pop("create_persona_file", True)
+    if not data.get("persona_file"):
+        data["persona_file"] = f"{data['role_id'].strip().lower()}.md"
+    persona_path = Path(REPO_ROOT) / "agents" / data["persona_file"]
+    if not create_file and data.get("kind") != "coding" and not persona_path.exists():
+        raise HTTPException(
+            400,
+            f"Persona not found: {data['persona_file']}. Create it on the Personas page first.",
+        )
+    try:
+        agent = _repo().add_agent(workflow_id, data)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if create_file and agent.get("kind") == "persona":
+        path = Path(REPO_ROOT) / "agents" / agent["persona_file"]
+        if not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                f"# {agent['display_name']}\n\nYou are @{agent['mention']}.\n",
+                encoding="utf-8",
+            )
+    return agent
+
+
+@router.delete("/api/workflows/{workflow_id}/agents/{agent_id}")
+def delete_agent(workflow_id: str, agent_id: str):
+    try:
+        _repo().delete_agent(workflow_id, agent_id)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    return {"ok": True}
+
+
+@router.get("/api/platforms")
+def platforms():
+    from core.secrets import CHAT_CONNECTION_FIELDS
+
+    return {
+        "platforms": list(PLATFORMS),
+        "connection_fields": CHAT_CONNECTION_FIELDS,
+    }
+
+
+@router.get("/api/tracking-providers")
+def tracking_providers():
+    return {
+        "providers": list(TRACKING_PROVIDERS),
+        "connection_fields": TRACKING_CONNECTION_FIELDS,
+    }
+
+
+@router.put("/api/workflows/{workflow_id}/tracking")
+def upsert_tracking(workflow_id: str, body: TrackingUpsert):
+    provider = (body.provider or "").strip().lower()
+    if provider not in TRACKING_PROVIDERS:
+        raise HTTPException(400, f"Invalid provider. Choose from {TRACKING_PROVIDERS}")
+    wf = _repo().get_workflow(workflow_id)
+    if not wf:
+        raise HTTPException(404, "Workflow not found")
+
+    # Preserve status_map / other nested extras when updating same provider
+    existing = dict(wf.tracking_config or {})
+    existing_nested = dict(existing.get(provider) or {})
+    status_map = existing_nested.get("status_map") or existing.get("status_map")
+    # Merge prior non-secret config so partial updates don't wipe fields
+    prior_config = {
+        k: v
+        for k, v in existing_nested.items()
+        if k not in ("status_map", "api_key", "api_token")
+    }
+    prior_config.update(body.config or {})
+
+    tracking_config = save_tracking_connection(
+        workflow_id,
+        provider,
+        prior_config,
+        body.secrets,
+        label=body.label
+        or str(existing.get("label") or "")
+        or f"{provider[:1].upper()}{provider[1:]} #1",
+    )
+    if status_map:
+        nested = dict(tracking_config.get(provider) or {})
+        nested["status_map"] = status_map
+        tracking_config[provider] = nested
+
+    try:
+        wf = _repo().update_workflow(
+            workflow_id,
+            {
+                "tracking_provider": provider,
+                "tracking_config": tracking_config,
+            },
+        )
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    return _workflow_payload(workflow_id, wf)
+
+
+@router.delete("/api/workflows/{workflow_id}/tracking")
+def clear_tracking(workflow_id: str):
+    try:
+        wf = _repo().update_workflow(
+            workflow_id,
+            {"tracking_provider": "none", "tracking_config": {}},
+        )
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    return _workflow_payload(workflow_id, wf)
+
+
+@router.post("/api/workflows/{workflow_id}/tracking/test")
+def test_tracking(workflow_id: str, body: TrackingTestBody = TrackingTestBody()):
+    """Probe Jira / Plane credentials (stored + draft form values)."""
+    wf = _repo().get_workflow(workflow_id)
+    if not wf:
+        raise HTTPException(404, "Workflow not found")
+    provider = (body.provider or wf.tracking_provider or "").strip().lower()
+    if provider not in TRACKING_PROVIDERS:
+        return {
+            "ok": False,
+            "platform": provider or "none",
+            "message": "Save a Jira or Plane tracking connection before testing",
+        }
+
+    existing = dict(wf.tracking_config or {})
+    nested = dict(existing.get(provider) or {})
+    flat = {
+        k: v
+        for k, v in existing.items()
+        if k not in ("provider", "jira", "plane", "label", "status_map")
+    }
+    credentials: dict[str, str] = {
+        **{k: str(v) for k, v in flat.items() if v is not None},
+        **{k: str(v) for k, v in nested.items() if k != "status_map" and v is not None},
+    }
+    # Inject stored secrets
+    credentials.update({k: v for k, v in resolve_tracking_secrets(workflow_id, provider).items() if v})
+    # Draft config/secrets override
+    for k, v in (body.config or {}).items():
+        if v:
+            credentials[k] = str(v)
+    for k, v in (body.secrets or {}).items():
+        if v and not str(v).startswith("(stored"):
+            credentials[k] = str(v)
+    return test_tracking_connection(provider, credentials)
+
+
+@router.post("/api/workflows/{workflow_id}/chats")
+def create_chat(workflow_id: str, body: ChatCreate):
+    try:
+        chat = _repo().add_chat(
+            workflow_id,
+            {
+                "platform": body.platform,
+                "label": body.label,
+                "config": body.config or {},
+            },
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    config_merge = save_chat_connection(
+        workflow_id,
+        chat["id"],
+        chat["platform"],
+        body.config,
+        body.secrets,
+    )
+    if config_merge:
+        merged = {**(chat.get("config") or {}), **config_merge}
+        chat = _repo().update_chat(workflow_id, chat["id"], {"config": merged})
+    return enrich_chat_connection(workflow_id, chat)
+
+
+@router.patch("/api/workflows/{workflow_id}/chats/{chat_id}")
+def patch_chat(workflow_id: str, chat_id: str, body: ChatPatch):
+    patch = {k: v for k, v in body.model_dump().items() if v is not None and k != "secrets"}
+    try:
+        # Load current for platform + existing config
+        wf = _repo().get_workflow(workflow_id)
+        if not wf:
+            raise ValueError("workflow not found")
+        current = next((c for c in wf.chats if c.id == chat_id), None)
+        if not current:
+            raise ValueError("chat not found")
+        platform = (patch.get("platform") or current.platform).strip().lower()
+        existing_config = dict(current.config or {})
+        if body.config:
+            existing_config.update(body.config)
+        config_from_secrets = save_chat_connection(
+            workflow_id,
+            chat_id,
+            platform,
+            body.config,
+            body.secrets,
+        )
+        existing_config.update(config_from_secrets)
+        patch["platform"] = platform
+        patch["config"] = existing_config
+        chat = _repo().update_chat(workflow_id, chat_id, patch)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return enrich_chat_connection(workflow_id, chat)
+
+
+@router.delete("/api/workflows/{workflow_id}/chats/{chat_id}")
+def delete_chat(workflow_id: str, chat_id: str):
+    try:
+        _repo().delete_chat(workflow_id, chat_id)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    return {"ok": True}
+
+
+@router.post("/api/workflows/{workflow_id}/chats/{chat_id}/test")
+def test_chat(workflow_id: str, chat_id: str, body: ChatTestBody = ChatTestBody()):
+    """Probe Discord / Slack / Telegram / Zulip credentials (stored + draft form values)."""
+    wf = _repo().get_workflow(workflow_id)
+    if not wf:
+        raise HTTPException(404, "Workflow not found")
+    current = next((c for c in wf.chats if c.id == chat_id), None)
+    if not current:
+        raise HTTPException(404, "Chat not found")
+    platform = (body.platform or current.platform or "").strip().lower()
+    stored = resolve_chat_secrets(workflow_id, chat_id, platform)
+    config = dict(current.config or {})
+    config.update({k: v for k, v in (body.config or {}).items() if v})
+    # Merge: stored secrets < config fields < draft secrets (non-blank)
+    credentials: dict[str, str] = {**stored}
+    for k, v in config.items():
+        if v:
+            credentials[k] = str(v)
+    for k, v in (body.secrets or {}).items():
+        if v and not str(v).startswith("(stored"):
+            credentials[k] = str(v)
+    return test_chat_connection(platform, credentials)
+
+
+@router.post("/api/workflows/{workflow_id}/channels")
+def create_channel(workflow_id: str, body: ChannelCreate):
+    try:
+        return _repo().add_channel(workflow_id, body.model_dump())
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.delete("/api/workflows/{workflow_id}/channels/{channel_id}")
+def delete_channel(workflow_id: str, channel_id: str):
+    try:
+        _repo().delete_channel(workflow_id, channel_id)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    return {"ok": True}
+
+
+@router.get("/api/workflows/{workflow_id}/secrets")
+def get_secrets(workflow_id: str):
+    wf = _repo().get_workflow(workflow_id)
+    if not wf:
+        raise HTTPException(404, "Workflow not found")
+    platforms = list({c.platform for c in wf.chats}) or ["discord"]
+    meta = get_workflow_secrets(workflow_id)
+    return {
+        **meta,
+        "fields": secret_fields_for_platforms(platforms),
+        "platforms": platforms,
+    }
+
+
+@router.put("/api/workflows/{workflow_id}/secrets")
+def put_secrets(workflow_id: str, body: SecretsUpdate):
+    if not _repo().get_workflow(workflow_id):
+        raise HTTPException(404, "Workflow not found")
+    return update_workflow_secrets(workflow_id, body.entries)
+
+
+@router.patch("/api/workflows/{workflow_id}/channels/{channel_id}")
+def patch_channel(workflow_id: str, channel_id: str, body: ChannelPatch):
+    db = get_db()
+    with db.connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM channels WHERE id = ? AND workflow_id = ?",
+            (channel_id, workflow_id),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "Channel not found")
+        if body.external_id is not None:
+            conn.execute(
+                "UPDATE channels SET external_id = ? WHERE id = ?",
+                (body.external_id, channel_id),
+            )
+        if body.agents is not None:
+            conn.execute(
+                "UPDATE channels SET agents_json = ? WHERE id = ?",
+                (_json(body.agents), channel_id),
+            )
+        if body.ticket_create_roles is not None:
+            conn.execute(
+                "UPDATE channels SET ticket_create_roles_json = ? WHERE id = ?",
+                (_json(body.ticket_create_roles), channel_id),
+            )
+        if body.chat_id is not None:
+            conn.execute(
+                "UPDATE channels SET chat_id = ? WHERE id = ?",
+                (body.chat_id, channel_id),
+            )
+    wf = _repo().get_workflow(workflow_id)
+    assert wf
+    ch = next((c for c in wf.channels if c.id == channel_id), None)
+    return ch.to_dict() if ch else {}
+
+
+@router.get("/api/engines")
+def engines():
+    return {"engines": list_engines()}
+
+
+@router.get("/api/mcp/catalog")
+def mcp_catalog():
+    return {"catalog": McpCatalog(get_db()).list_catalog()}
+
+
+@router.post("/api/mcp/catalog")
+def mcp_add(body: McpAddBody):
+    return McpCatalog(get_db()).add_custom(
+        name=body.name,
+        description=body.description,
+        transport=body.transport,
+        command=body.command,
+        env=body.env,
+        docs_url=body.docs_url,
+    )
+
+
+@router.post("/api/workflows/{workflow_id}/mcp")
+def mcp_enable(workflow_id: str, body: McpEnableBody):
+    if not _repo().get_workflow(workflow_id):
+        raise HTTPException(404, "Workflow not found")
+    return McpCatalog(get_db()).enable_on_workflow(
+        workflow_id, body.catalog_id, body.enabled, body.config
+    )
+
+
+@router.get("/api/workflows/{workflow_id}/mcp")
+def mcp_list(workflow_id: str):
+    return {"servers": McpCatalog(get_db()).workflow_servers(workflow_id, enabled_only=False)}
+
+
+@router.get("/api/workflows/{workflow_id}/cron")
+def list_cron(workflow_id: str):
+    wf = _repo().get_workflow(workflow_id)
+    if not wf:
+        raise HTTPException(404, "Workflow not found")
+    return {"jobs": [j.to_dict() for j in wf.cron_jobs]}
+
+
+@router.post("/api/workflows/{workflow_id}/cron")
+def add_cron(workflow_id: str, body: CronBody):
+    if not _repo().get_workflow(workflow_id):
+        raise HTTPException(404, "Workflow not found")
+    jid = new_id("cron_")
+    with get_db().connect() as conn:
+        conn.execute(
+            "INSERT INTO cron_jobs(id, workflow_id, name, cron_expr, agent_role, channel_name, prompt, enabled) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                jid,
+                workflow_id,
+                body.name,
+                body.cron_expr,
+                body.agent_role,
+                body.channel_name,
+                body.prompt,
+                1 if body.enabled else 0,
+            ),
+        )
+    pool = get_pool()
+    if workflow_id in pool.runtimes:
+        get_cron_scheduler().sync_from_workflows([r.workflow for r in pool.runtimes.values()])
+    return {"id": jid, **body.model_dump()}
+
+
+@router.get("/api/cron")
+def cron_all():
+    return {"jobs": get_cron_scheduler().list_jobs()}
+
+
+@router.get("/api/runtime/status")
+def runtime_status():
+    pool = get_pool()
+    return {
+        "active_count": len(pool.runtimes),
+        "workflows": [
+            {"id": wid, "name": rt.workflow.name, "engine": rt.workflow.reasoning_engine}
+            for wid, rt in pool.runtimes.items()
+        ],
+        "channel_index": [
+            {"platform": p, "channel_id": c, "workflow_id": wid}
+            for (p, c), wid in pool.channel_index.items()
+        ],
+    }
+
+
+@router.post("/api/runtime/reload")
+def runtime_reload():
+    pool = reload_pool()
+    get_cron_scheduler().sync_from_workflows([r.workflow for r in pool.runtimes.values()])
+    return {"ok": True, "active_count": len(pool.runtimes)}
+
+
+@router.get("/api/workflows/{workflow_id}/memory/health")
+def wf_memory_health(workflow_id: str):
+    wf = _repo().get_workflow(workflow_id)
+    if not wf:
+        raise HTTPException(404, "Workflow not found")
+    cfg = dict(wf.memory_config or {})
+    root = cfg.get("root_folder") or "OMC"
+    cfg["root_folder"] = f"{root}/{wf.id}"
+    store = build_memory_store(wf.memory_provider, cfg)
+    if store is None:
+        return {"ok": False, "provider": wf.memory_provider, "workflow_id": workflow_id}
+    return {"provider": wf.memory_provider, "workflow_id": workflow_id, **store.health()}
+
+
+@router.get("/api/workflows/{workflow_id}/memory/tasks")
+def wf_memory_tasks(workflow_id: str):
+    wf = _repo().get_workflow(workflow_id)
+    if not wf:
+        raise HTTPException(404, "Workflow not found")
+    cfg = dict(wf.memory_config or {})
+    root = cfg.get("root_folder") or "OMC"
+    cfg["root_folder"] = f"{root}/{wf.id}"
+    store = build_memory_store(wf.memory_provider, cfg)
+    if store is None:
+        return {"tasks": [], "provider": wf.memory_provider}
+    return {"tasks": store.list_tasks(), "provider": wf.memory_provider}
+
+
+@router.get("/api/kanban/v2")
+def kanban_v2(workflow_id: Optional[str] = None):
+    """Kanban across active workflows (or one selected)."""
+    repo = _repo()
+    wfs = [repo.get_workflow(workflow_id)] if workflow_id else repo.list_active()
+    wfs = [w for w in wfs if w]
+    columns = [
+        "backlog",
+        "todo",
+        "in progress",
+        "in review",
+        "qa review",
+        "qa failed",
+        "qa verified",
+        "ready to deploy",
+        "deployed",
+        "done",
+        "cancelled",
+        "unknown",
+    ]
+    board: dict[str, list] = {c: [] for c in columns}
+    for wf in wfs:
+        cfg = dict(wf.memory_config or {})
+        root = cfg.get("root_folder") or "OMC"
+        cfg["root_folder"] = f"{root}/{wf.id}"
+        store = build_memory_store(wf.memory_provider, cfg)
+        tasks = store.list_tasks() if store else []
+        for t in tasks:
+            status = (t.get("status") or "backlog").lower()
+            card = {
+                **t,
+                "id": t.get("task_id"),
+                "workflow_id": wf.id,
+                "workflow_name": wf.name,
+            }
+            col = status if status in board else "unknown"
+            board[col].append(card)
+    return {"columns": columns, "board": board}

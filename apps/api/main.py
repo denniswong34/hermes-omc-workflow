@@ -18,9 +18,13 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
 from apps.api.deps import agents_dir, config_path, secrets_env_path, task_map_path
+from apps.api.workflows import router as workflows_router
+from core.db.seed import seed_database
+from core.db import get_db
 from core.memory import create_memory_store
+from core.workflow import get_pool
 
-app = FastAPI(title="OMC Agentic OS API", version="0.1.0")
+app = FastAPI(title="OMC Agentic OS API", version="0.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -29,6 +33,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(workflows_router)
+
+
+@app.on_event("startup")
+def _startup():
+    seed_database(get_db(), activate=True)
+    get_pool()
 
 
 def _load_raw_yaml() -> dict:
@@ -72,13 +84,26 @@ class AgentUpdate(BaseModel):
     content: str
 
 
+class AgentCreate(BaseModel):
+    role: str
+    content: str = ""
+    shared: bool = False
+
+
 class SecretsUpdate(BaseModel):
     entries: dict[str, str] = Field(default_factory=dict)
 
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "service": "agentic-os-api", "repo": str(REPO_ROOT)}
+    pool = get_pool()
+    return {
+        "ok": True,
+        "service": "agentic-os-api",
+        "version": "0.2.0",
+        "repo": str(REPO_ROOT),
+        "active_workflows": len(pool.runtimes),
+    }
 
 
 @app.get("/api/bridge/status")
@@ -141,6 +166,38 @@ def put_agent(role: str, body: AgentUpdate):
         path = agents_dir() / f"{role}.md"
     path.write_text(body.content, encoding="utf-8")
     return {"ok": True, "path": str(path)}
+
+
+@app.post("/api/agents")
+def create_persona(body: AgentCreate):
+    role = body.role.strip().lower().replace(" ", "_")
+    if not role or role.startswith("shared"):
+        raise HTTPException(400, "Invalid role id")
+    if body.shared:
+        path = agents_dir() / "_shared" / f"{role}.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        key = f"shared:{role}"
+    else:
+        path = agents_dir() / f"{role}.md"
+        key = role
+    if path.exists():
+        raise HTTPException(409, f"Persona already exists: {role}")
+    content = body.content.strip() or f"# {role}\n\nYou are @{role}.\n"
+    path.write_text(content, encoding="utf-8")
+    return {"ok": True, "role": key, "path": str(path)}
+
+
+@app.delete("/api/agents/{role}")
+def delete_persona(role: str):
+    if role.startswith("shared:"):
+        name = role.split(":", 1)[1]
+        path = agents_dir() / "_shared" / f"{name}.md"
+    else:
+        path = agents_dir() / f"{role}.md"
+    if not path.exists():
+        raise HTTPException(404, f"Agent file not found: {role}")
+    path.unlink()
+    return {"ok": True}
 
 
 @app.get("/api/secrets")
@@ -293,7 +350,7 @@ def run():
         "apps.api.main:app",
         host=os.environ.get("OMC_API_HOST", "127.0.0.1"),
         port=int(os.environ.get("OMC_API_PORT", "8787")),
-        reload=True,
+        reload=os.environ.get("OMC_API_RELOAD", "0") == "1",
     )
 
 

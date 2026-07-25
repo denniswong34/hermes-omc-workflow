@@ -1,6 +1,7 @@
-import { apiGet } from "@/lib/api";
+"use client";
 
-export const dynamic = "force-dynamic";
+import { useEffect, useState } from "react";
+import { apiGet } from "@/lib/api";
 
 type Task = {
   task_id: string;
@@ -12,33 +13,76 @@ type Task = {
   updated: string;
 };
 
-export default async function MemoryPage() {
-  let health: Record<string, unknown> = {};
-  let tasks: Task[] = [];
-  let err = "";
-  try {
-    health = await apiGet("/api/memory/health");
-    const t = await apiGet<{ tasks: Task[] }>("/api/memory/tasks");
-    tasks = t.tasks || [];
-  } catch (e) {
-    err = e instanceof Error ? e.message : String(e);
+type Wf = { id: string; name: string; is_active: boolean; memory_provider: string };
+
+export default function MemoryPage() {
+  const [workflows, setWorkflows] = useState<Wf[]>([]);
+  const [wfId, setWfId] = useState("");
+  const [health, setHealth] = useState<Record<string, unknown>>({});
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [err, setErr] = useState("");
+
+  async function load(id: string) {
+    if (!id) return;
+    const h = await apiGet<Record<string, unknown>>(`/api/workflows/${id}/memory/health`);
+    const t = await apiGet<{ tasks: Task[] }>(`/api/workflows/${id}/memory/tasks`);
+    setHealth(h);
+    setTasks(t.tasks || []);
   }
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const w = await apiGet<{ workflows: Wf[] }>("/api/workflows");
+        setWorkflows(w.workflows);
+        const first = w.workflows.find((x) => x.is_active) || w.workflows[0];
+        if (first) {
+          setWfId(first.id);
+          await load(first.id);
+        }
+      } catch (e) {
+        setErr(e instanceof Error ? e.message : String(e));
+      }
+    })();
+  }, []);
 
   return (
     <div>
-      <h1>Memory (Obsidian)</h1>
+      <h1>Memory</h1>
       <p className="muted">
-        Shared TASK notes so Hermes / Claude / Cursor / OpenCode / Codex keep the same context.
+        Per-workflow memory (hermes markdown store or Obsidian vault), namespaced by workflow id.
       </p>
       {err && <div className="panel error">{err}</div>}
       <div className="panel">
-        <h2>Vault health</h2>
+        <label>
+          Workflow{" "}
+          <select
+            value={wfId}
+            onChange={async (e) => {
+              setWfId(e.target.value);
+              try {
+                await load(e.target.value);
+              } catch (ex) {
+                setErr(ex instanceof Error ? ex.message : String(ex));
+              }
+            }}
+          >
+            {workflows.map((w) => (
+              <option key={w.id} value={w.id}>
+                {w.name} ({w.memory_provider})
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <div className="panel">
+        <h2>Health</h2>
         <pre>{JSON.stringify(health, null, 2)}</pre>
       </div>
       <div className="panel">
         <h2>Tasks ({tasks.length})</h2>
         {tasks.length === 0 ? (
-          <p className="muted">No TASK notes yet. Set OMC_OBSIDIAN_VAULT and run the bridge.</p>
+          <p className="muted">No TASK notes in this workflow namespace yet.</p>
         ) : (
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.9rem" }}>
             <thead>
@@ -48,7 +92,6 @@ export default async function MemoryPage() {
                 <th>Status</th>
                 <th>Assignee</th>
                 <th>Backend</th>
-                <th>Updated</th>
               </tr>
             </thead>
             <tbody>
@@ -59,7 +102,6 @@ export default async function MemoryPage() {
                   <td>{t.status}</td>
                   <td>{t.assignee}</td>
                   <td>{t.backend}</td>
-                  <td className="muted">{t.updated}</td>
                 </tr>
               ))}
             </tbody>

@@ -1,9 +1,63 @@
-# Hermes OMC Workflow Bridge
+# Hermes OMC Workflow — Agentic OS
 
-**One Man Company (OMC)** — Boss talks in SaaS **topic channels** and `@mentions` agents.
-Agents hand off **in the same channel**. Tickets live in Plane / Jira. Shared memory lives in an **Obsidian vault**. Configure everything in **Agentic OS**.
+**One Man Company (OMC)** — Boss talks in SaaS topic channels and `@mentions` agents.
+**Agentic OS** is the multi-workflow control plane: templates, reasoning engines, MCP marketplace, memory, tracking, and cron.
 
-## Topic rooms (defaults)
+## Agentic OS (multi-workflow)
+
+SQLite stores workflows (many may be `is_active`). Secrets stay in `~/.hermes/omc/secrets.env`.
+
+| Layer | Role |
+|-------|------|
+| Reasoning engine | hermes / claude / cursor / opencode / codex (workflow default + per-agent override) |
+| MCP tools | Local marketplace catalog → enable per workflow → agent allowlists |
+| Chat hub | Discord / Slack / Zulip / Telegram; `(platform, channel_id)` → one active workflow |
+| Memory | hermes (local markdown) or obsidian, namespaced per workflow |
+| Tracking | jira / plane / none |
+| Cron | APScheduler jobs per active workflow |
+
+### Run control plane
+
+```bash
+pip install -r requirements.txt
+
+# API http://127.0.0.1:8787
+python -m apps.api.main
+
+# UI http://127.0.0.1:3000
+cd apps/agentic-os && npm install && npm run dev
+```
+
+UI pages: Overview, **Workflows**, **MCP Marketplace**, Personas, Memory, Kanban, Secrets.
+
+### SDLC template
+
+On first API start the DB seeds system template **SDLC Workflow** and a default company instance.
+Clone from the Workflows page; activate multiple companies (soft max 5). Activation fails if a channel ID is already owned by another active workflow.
+
+### Multi-workflow bridge
+
+```bash
+python bridge_multi.py
+```
+
+Legacy single-YAML bridge:
+
+```bash
+python bridge.py
+```
+
+### Smoke tests
+
+```bash
+python -m tests.test_redesign_smoke -v
+```
+
+Covers: SDLC seed, dual-active + channel conflict, engines, Hermes memory, MCP enable, runtime pool.
+
+---
+
+## Topic rooms (SDLC defaults)
 
 | Channel | Purpose | Who you can @ |
 |---------|---------|----------------|
@@ -13,95 +67,43 @@ Agents hand off **in the same channel**. Tickets live in Plane / Jira. Shared me
 | `#support` | Customer bugs | `@PM` `@SA` `@Coder` `@QA` |
 | `#standup` | Digests | `@Standup` |
 
-Set channel IDs in [`config/omc.yaml`](config/omc.yaml).
+Configure channel IDs in Agentic OS → Workflow → Channels (or legacy `config/omc.yaml` for `bridge.py`).
 
-## Coding backends
+## Coding / reasoning engines
 
 | Mention | Backend |
 |---------|---------|
-| `@Coder` | `coding.default` (usually Hermes) |
-| `@Hermes` | Hermes CLI |
-| `@Claude` | Claude Code CLI |
-| `@Cursor` | Cursor `agent` CLI |
-| `@OpenCode` | OpenCode CLI |
-| `@Codex` | OpenAI Codex CLI (`codex exec`) |
+| `@Coder` | workflow `coding_default` |
+| `@Hermes` / `@Claude` / `@Cursor` / `@OpenCode` / `@Codex` | Named CLI |
+| Persona roles | workflow `reasoning_engine` (override per agent) |
 
 ```bash
 export OMC_WORKSPACE=/path/to/your/saas/repo
 ```
 
-## Obsidian shared memory
+## Memory
 
-All agents/backends read and write the same TASK notes so switching `@Claude` → `@Codex` keeps context.
-
-```yaml
-memory:
-  provider: obsidian
-  obsidian:
-    vault_path: "${OMC_OBSIDIAN_VAULT}"
-    root_folder: OMC
-```
+- **hermes** — markdown under `~/.hermes/omc/memory/{workflow_id}/…`
+- **obsidian** — vault path + root folder namespaced by workflow id
 
 ```bash
 export OMC_OBSIDIAN_VAULT=/path/to/your/obsidian/vault
 ```
 
-Vault layout (auto-created):
-
-```text
-{vault}/OMC/tasks/TASK-014.md
-{vault}/OMC/handoffs/
-{vault}/OMC/daily/
-```
-
-## Agentic OS (control plane)
-
-Web UI + API to edit config, agents, secrets, memory, and a read-only Kanban board.
-
-```bash
-pip install -r requirements.txt
-
-# API (http://127.0.0.1:8787)
-python -m apps.api.main
-
-# UI (http://127.0.0.1:3000)
-cd apps/agentic-os && npm install && npm run dev
-```
-
-Pages: Overview, Connections, Agents, Memory, Kanban.
-
-Optional: `NEXT_PUBLIC_API_BASE=http://127.0.0.1:8787`
-
-## Quick start (bridge)
-
-```bash
-pip install -r requirements.txt
-
-# 1. Paste Discord topic channel IDs into config/omc.yaml
-# 2. DISCORD_BOT_TOKEN in ~/.hermes/.env
-# 3. OMC_WORKSPACE + OMC_OBSIDIAN_VAULT
-python bridge.py
-```
-
-## Tickets
-
-```yaml
-tickets:
-  provider: none   # or plane | jira
-```
-
 ## Architecture
 
 ```
-Discord / Zulip / Slack
+Discord / Slack / Zulip / Telegram
         │
         ▼
-  AgentRouter ──► CodingBackends (hermes/claude/cursor/opencode/codex)
-        │
-        ├──► ObsidianMemoryStore  (shared TASK notes)
-        └──► TicketTracker        (Plane / Jira / none)
-
-Agentic OS (Next.js) ──► FastAPI ──► omc.yaml / agents/*.md / vault / task_map
+ ChatAdapterHub ──► WorkflowRuntimePool (N active)
+        │                 │
+        │                 ├── ReasoningEngines + MCP allowlist
+        │                 ├── Memory (hermes|obsidian)
+        │                 ├── Tickets (jira|plane|none)
+        │                 └── Cron jobs
+        ▼
+Agentic OS (Next.js) ──► FastAPI ──► SQLite + secrets.env
 ```
 
 ## Agent roster
@@ -117,13 +119,13 @@ Agentic OS (Next.js) ──► FastAPI ──► omc.yaml / agents/*.md / vault 
 | `@Standup` | Digest bot |
 | `@Hermes` `@Claude` `@Cursor` `@OpenCode` `@Codex` | Coding CLIs |
 
-## Roadmap
+## Env
 
-- [x] Topic channels + in-channel @mentions
-- [x] Pluggable tickets (Plane / Jira / none)
-- [x] Pluggable coding backends (+ Codex)
-- [x] Obsidian shared memory
-- [x] Agentic OS MVP (config / agents / memory / kanban)
-- [ ] Kanban drag-drop → ticket transitions
-- [ ] Bridge process manager in Agentic OS
-- [ ] Zulip / Slack adapter completion
+| Variable | Purpose |
+|----------|---------|
+| `OMC_DB_PATH` | SQLite path (default `~/.hermes/omc/omc.db`) |
+| `OMC_SECRETS_ENV` | Secrets file |
+| `NEXT_PUBLIC_API_BASE` | UI → API (default `http://127.0.0.1:8787`) |
+| `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` | Slack |
+| `TELEGRAM_BOT_TOKEN` | Telegram |
+| `OMC_CONFIG` | Legacy YAML for `bridge.py` |

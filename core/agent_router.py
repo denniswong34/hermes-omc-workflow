@@ -83,7 +83,7 @@ class AgentRouter:
 
         # Our own posts are already handled (direct handoff enqueue + edited replies)
         raw = msg.content or ""
-        if msg.is_bot and raw.lstrip().startswith("**[@"):
+        if msg.is_bot and ("**[@" in raw or "Processing..." in raw):
             return
 
         content = self._strip_display_prefix(raw)

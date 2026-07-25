@@ -7,6 +7,7 @@ Implements ChannelAdapter using discord.py (REST API + Gateway).
 import asyncio
 import logging
 import os
+from pathlib import Path
 from typing import Callable, Optional
 
 import aiohttp
@@ -16,9 +17,21 @@ from discord.ext import commands
 from adapters.base import ChannelAdapter, Message, MessageHandler
 
 
-DISCORD_TOKEN = open(os.path.expanduser("~/.hermes/.env")).read() \
-    .split("DISCORD_BOT_TOKEN=")[1].split("\n")[0].strip()
 DISCORD_API = "https://discord.com/api/v10"
+
+
+def _discord_token() -> str:
+    token = (os.environ.get("DISCORD_BOT_TOKEN") or "").strip()
+    if token:
+        return token
+    env_path = Path(os.path.expanduser("~/.hermes/.env"))
+    if env_path.exists():
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            if line.startswith("DISCORD_BOT_TOKEN="):
+                return line.split("=", 1)[1].strip()
+    raise RuntimeError(
+        "DISCORD_BOT_TOKEN not set (workflow secrets or ~/.hermes/.env)"
+    )
 
 
 class DiscordAdapter(ChannelAdapter):
@@ -31,6 +44,7 @@ class DiscordAdapter(ChannelAdapter):
         """
         self.channel_map = channel_map
         self.name_by_id = {v: k for k, v in channel_map.items()}
+        self._token = _discord_token()
 
         intents = discord.Intents.none()
         intents.guilds = True
@@ -47,6 +61,7 @@ class DiscordAdapter(ChannelAdapter):
             logging.info(f"✓ Discord connected as {self.bot.user} ({self.bot.user.id})")
             for g in self.bot.guilds:
                 logging.info(f"  Guild: {g.name} ({g.id})")
+
 
         @self.bot.event
         async def on_message(msg):
@@ -78,7 +93,7 @@ class DiscordAdapter(ChannelAdapter):
 
     async def start(self):
         self._http_session = aiohttp.ClientSession()
-        await self.bot.start(DISCORD_TOKEN)
+        await self.bot.start(self._token)
 
     async def stop(self):
         if self._http_session:
@@ -118,7 +133,7 @@ class DiscordAdapter(ChannelAdapter):
         if not self._http_session:
             return None
         url = f"{DISCORD_API}{endpoint}"
-        headers = {"Authorization": f"Bot {DISCORD_TOKEN}"}
+        headers = {"Authorization": f"Bot {self._token}"}
         if payload:
             headers["Content-Type"] = "application/json"
         try:
