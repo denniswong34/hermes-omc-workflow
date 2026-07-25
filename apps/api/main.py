@@ -18,13 +18,14 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
 from apps.api.deps import agents_dir, config_path, secrets_env_path, task_map_path
+from apps.api.auth_router import router as auth_router
 from apps.api.workflows import router as workflows_router
 from core.db.seed import seed_database
 from core.db import get_db
 from core.memory import create_memory_store
 from core.workflow import get_pool
 
-app = FastAPI(title="OMC Agentic OS API", version="0.2.0")
+app = FastAPI(title="OMC Agentic OS API", version="0.3.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -35,6 +36,7 @@ app.add_middleware(
 )
 
 app.include_router(workflows_router)
+app.include_router(auth_router)
 
 
 @app.on_event("startup")
@@ -100,7 +102,7 @@ def health():
     return {
         "ok": True,
         "service": "agentic-os-api",
-        "version": "0.2.0",
+        "version": "0.3.0",
         "repo": str(REPO_ROOT),
         "active_workflows": len(pool.runtimes),
     }
@@ -108,11 +110,36 @@ def health():
 
 @app.get("/api/bridge/status")
 def bridge_status():
-    # MVP stub — process manager is phase 2
-    return {
-        "running": False,
-        "message": "Bridge process control not wired yet. Run: python bridge.py",
-    }
+    from apps.api.bridge_proc import bridge_status as _status
+
+    return _status()
+
+
+@app.post("/api/bridge/restart")
+def bridge_restart():
+    from apps.api.bridge_proc import restart_bridge
+
+    result = restart_bridge()
+    if not result.get("ok"):
+        raise HTTPException(500, result.get("message") or "Bridge restart failed")
+    return result
+
+
+@app.post("/api/bridge/start")
+def bridge_start():
+    from apps.api.bridge_proc import start_bridge
+
+    result = start_bridge()
+    if not result.get("ok"):
+        raise HTTPException(500, result.get("message") or "Bridge start failed")
+    return result
+
+
+@app.post("/api/bridge/stop")
+def bridge_stop():
+    from apps.api.bridge_proc import stop_bridge
+
+    return stop_bridge()
 
 
 @app.get("/api/config")
