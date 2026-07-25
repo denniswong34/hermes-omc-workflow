@@ -7,12 +7,18 @@ export const metadata = {
   description: "Control plane for One Man Company workflows",
 };
 
+export const viewport = {
+  width: "device-width",
+  initialScale: 1,
+  themeColor: "#0b0f14",
+};
+
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
       <body>
         <Nav />
-        <main style={{ padding: "1.5rem", maxWidth: 1200, margin: "0 auto" }}>{children}</main>
+        <main className="page-main">{children}</main>
       </body>
     </html>
   );

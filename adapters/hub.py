@@ -51,14 +51,21 @@ class ChatAdapterHub:
         adapter.on_message(_wrap)
 
     async def start_all(self) -> None:
-        for name, ad in self.adapters.items():
+        for name, ad in list(self.adapters.items()):
             logger.info("Starting adapter: %s", name)
-            await ad.start()
+            try:
+                await ad.start()
+            except Exception as e:
+                logger.error("Adapter %s failed to start: %s", name, e)
+                self.adapters.pop(name, None)
 
     async def stop_all(self) -> None:
-        for name, ad in self.adapters.items():
+        for name, ad in list(self.adapters.items()):
             logger.info("Stopping adapter: %s", name)
-            await ad.stop()
+            try:
+                await ad.stop()
+            except Exception as e:
+                logger.warning("Adapter %s stop error: %s", name, e)
 
     async def send(
         self, platform: str, channel_id: str, content: str
@@ -76,52 +83,68 @@ def build_default_hub(
     """
     Build hub with Discord/Slack/Zulip/Telegram from env credentials.
     channel_maps: platform -> {topic_name: external_id}
+    Only registers adapters that have credentials / channel maps.
     """
     maps = channel_maps or {}
     hub = ChatAdapterHub()
 
-    try:
-        from adapters.discord_adapter import DiscordAdapter
+    discord_token = (os.environ.get("DISCORD_BOT_TOKEN") or "").strip()
+    if discord_token or maps.get("discord"):
+        try:
+            from adapters.discord_adapter import DiscordAdapter
 
-        hub.register("discord", DiscordAdapter(channel_map=maps.get("discord") or {}))
-    except Exception as e:
-        logger.warning("Discord adapter unavailable: %s", e)
+            hub.register(
+                "discord", DiscordAdapter(channel_map=maps.get("discord") or {})
+            )
+        except Exception as e:
+            logger.warning("Discord adapter unavailable: %s", e)
 
-    try:
-        from adapters.slack_adapter import SlackAdapter
+    slack_bot = (os.environ.get("SLACK_BOT_TOKEN") or "").strip()
+    slack_app = (os.environ.get("SLACK_APP_TOKEN") or "").strip()
+    if slack_bot and slack_app:
+        try:
+            from adapters.slack_adapter import SlackAdapter
 
-        hub.register(
-            "slack",
-            SlackAdapter(
-                bot_token=os.environ.get("SLACK_BOT_TOKEN", ""),
-                app_token=os.environ.get("SLACK_APP_TOKEN", ""),
-                channel_map=maps.get("slack") or {},
-            ),
-        )
-    except Exception as e:
-        logger.warning("Slack adapter unavailable: %s", e)
+            hub.register(
+                "slack",
+                SlackAdapter(
+                    bot_token=slack_bot,
+                    app_token=slack_app,
+                    channel_map=maps.get("slack") or {},
+                ),
+            )
+        except Exception as e:
+            logger.warning("Slack adapter unavailable: %s", e)
 
-    try:
-        from adapters.zulip_adapter import ZulipAdapter
+    zulip_key = (
+        (os.environ.get("ZULIP_API_KEY") or "").strip()
+        or (os.environ.get("ZULIP_SITE") or "").strip()
+        or (os.environ.get("ZULIP_SITE_URL") or "").strip()
+    )
+    if zulip_key and maps.get("zulip"):
+        try:
+            from adapters.zulip_adapter import ZulipAdapter
 
-        hub.register(
-            "zulip",
-            ZulipAdapter(stream_map=maps.get("zulip") or {}),
-        )
-    except Exception as e:
-        logger.warning("Zulip adapter unavailable: %s", e)
+            hub.register(
+                "zulip",
+                ZulipAdapter(stream_map=maps.get("zulip") or {}),
+            )
+        except Exception as e:
+            logger.warning("Zulip adapter unavailable: %s", e)
 
-    try:
-        from adapters.telegram_adapter import TelegramAdapter
+    telegram_token = (os.environ.get("TELEGRAM_BOT_TOKEN") or "").strip()
+    if telegram_token:
+        try:
+            from adapters.telegram_adapter import TelegramAdapter
 
-        hub.register(
-            "telegram",
-            TelegramAdapter(
-                bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", ""),
-                channel_map=maps.get("telegram") or {},
-            ),
-        )
-    except Exception as e:
-        logger.warning("Telegram adapter unavailable: %s", e)
+            hub.register(
+                "telegram",
+                TelegramAdapter(
+                    bot_token=telegram_token,
+                    channel_map=maps.get("telegram") or {},
+                ),
+            )
+        except Exception as e:
+            logger.warning("Telegram adapter unavailable: %s", e)
 
     return hub

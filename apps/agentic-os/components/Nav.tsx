@@ -1,9 +1,13 @@
+"use client";
+
 import Link from "next/link";
+import { usePathname } from "next/navigation";
+import { useState } from "react";
 
 const LINKS = [
   { href: "/", label: "Overview" },
   { href: "/workflows", label: "Workflows" },
-  { href: "/mcp", label: "MCP Marketplace" },
+  { href: "/mcp", label: "MCP" },
   { href: "/agents", label: "Personas" },
   { href: "/memory", label: "Memory" },
   { href: "/kanban", label: "Kanban" },
@@ -11,29 +15,46 @@ const LINKS = [
 ];
 
 export function Nav() {
+  const pathname = usePathname();
+  const [open, setOpen] = useState(false);
+
   return (
-    <header
-      style={{
-        display: "flex",
-        gap: "1.25rem",
-        alignItems: "center",
-        padding: "1rem 1.5rem",
-        borderBottom: "1px solid #2a3344",
-        background: "#0f1419",
-      }}
-    >
-      <strong style={{ letterSpacing: "0.04em", color: "#e8eef7" }}>OMC Agentic OS</strong>
-      <nav style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
-        {LINKS.map((l) => (
-          <Link
-            key={l.href}
-            href={l.href}
-            style={{ color: "#9db0c9", textDecoration: "none", fontSize: "0.95rem" }}
-          >
-            {l.label}
-          </Link>
-        ))}
-      </nav>
+    <header className="site-header">
+      <div className="site-header-inner">
+        <Link href="/" className="brand" onClick={() => setOpen(false)}>
+          OMC Agentic OS
+        </Link>
+        <button
+          type="button"
+          className="nav-toggle"
+          aria-expanded={open}
+          aria-controls="site-nav"
+          aria-label={open ? "Close menu" : "Open menu"}
+          onClick={() => setOpen((v) => !v)}
+        >
+          <span />
+          <span />
+          <span />
+        </button>
+        <nav id="site-nav" className={open ? "site-nav open" : "site-nav"}>
+          {LINKS.map((l) => {
+            const active =
+              l.href === "/"
+                ? pathname === "/"
+                : pathname === l.href || pathname.startsWith(`${l.href}/`);
+            return (
+              <Link
+                key={l.href}
+                href={l.href}
+                className={active ? "nav-link active" : "nav-link"}
+                onClick={() => setOpen(false)}
+              >
+                {l.label}
+              </Link>
+            );
+          })}
+        </nav>
+      </div>
     </header>
   );
 }

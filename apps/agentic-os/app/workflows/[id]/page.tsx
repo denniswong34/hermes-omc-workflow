@@ -113,22 +113,40 @@ const DEFAULT_TICKET_ROLES: Record<string, string[]> = {
   standup: [],
 };
 
+const MESSAGE_FORMAT_FIELD: ConnField = {
+  key: "message_format",
+  label: "Message format",
+  kind: "config",
+  input: "select",
+  default: "card",
+  options: [
+    { value: "block", label: "Block (━━ bars)" },
+    { value: "card", label: "Card (box header) — default" },
+    { value: "quote", label: "Quote (speaker style)" },
+    { value: "sections", label: "Sections (FROM/RESPONSE)" },
+  ],
+};
+
 /** Fallback field schemas if /api/platforms is stale */
 const FALLBACK_FIELDS: Record<string, ConnField[]> = {
   discord: [
     { key: "DISCORD_BOT_TOKEN", label: "Bot token", kind: "secret", input: "password" },
+    MESSAGE_FORMAT_FIELD,
   ],
   slack: [
     { key: "SLACK_BOT_TOKEN", label: "Bot token", kind: "secret", input: "password" },
     { key: "SLACK_APP_TOKEN", label: "App token (Socket Mode)", kind: "secret", input: "password" },
+    MESSAGE_FORMAT_FIELD,
   ],
   telegram: [
     { key: "TELEGRAM_BOT_TOKEN", label: "Bot token", kind: "secret", input: "password" },
+    MESSAGE_FORMAT_FIELD,
   ],
   zulip: [
     { key: "ZULIP_SITE", label: "Site URL", kind: "config", input: "text" },
     { key: "ZULIP_EMAIL", label: "Bot email", kind: "config", input: "text" },
     { key: "ZULIP_API_KEY", label: "API key", kind: "secret", input: "password" },
+    MESSAGE_FORMAT_FIELD,
   ],
 };
 

@@ -15,6 +15,8 @@ from core.mcp import McpCatalog
 from core.memory import build_memory_store
 from core.chat_test import test_chat_connection
 from core.tracking_test import test_tracking_connection
+from core.tickets.discover import discover_tracking_status_map
+from core.tickets.status_map import nonempty_status_map
 from core.secrets import (
     PLATFORMS,
     TRACKING_CONNECTION_FIELDS,
@@ -40,6 +42,40 @@ def _repo() -> WorkflowRepository:
     repo = WorkflowRepository(db)
     repo.ensure_seeded()
     return repo
+
+
+def _tracking_credentials(
+    workflow_id: str,
+    provider: str,
+    tracking_config: dict | None,
+) -> dict[str, str]:
+    existing = dict(tracking_config or {})
+    nested = dict(existing.get(provider) or {})
+    flat = {
+        k: v
+        for k, v in existing.items()
+        if k not in ("provider", "jira", "plane", "label", "status_map")
+    }
+    credentials: dict[str, str] = {
+        **{k: str(v) for k, v in flat.items() if v is not None and k != "status_map"},
+        **{k: str(v) for k, v in nested.items() if k != "status_map" and v is not None},
+    }
+    credentials.update(
+        {k: v for k, v in resolve_tracking_secrets(workflow_id, provider).items() if v}
+    )
+    return credentials
+
+
+def _attach_status_map(
+    tracking_config: dict,
+    provider: str,
+    status_map: dict[str, str],
+) -> dict:
+    cfg = dict(tracking_config or {})
+    nested = dict(cfg.get(provider) or {})
+    nested["status_map"] = nonempty_status_map(status_map)
+    cfg[provider] = nested
+    return cfg
 
 
 class ActivateBody(BaseModel):
@@ -331,13 +367,16 @@ def upsert_tracking(workflow_id: str, body: TrackingUpsert):
     existing = dict(wf.tracking_config or {})
     existing_nested = dict(existing.get(provider) or {})
     status_map = existing_nested.get("status_map") or existing.get("status_map")
+    body_cfg = dict(body.config or {})
+    if isinstance(body_cfg.get("status_map"), dict):
+        status_map = body_cfg.pop("status_map")
     # Merge prior non-secret config so partial updates don't wipe fields
     prior_config = {
         k: v
         for k, v in existing_nested.items()
         if k not in ("status_map", "api_key", "api_token")
     }
-    prior_config.update(body.config or {})
+    prior_config.update(body_cfg)
 
     tracking_config = save_tracking_connection(
         workflow_id,
@@ -349,9 +388,17 @@ def upsert_tracking(workflow_id: str, body: TrackingUpsert):
         or f"{provider[:1].upper()}{provider[1:]} #1",
     )
     if status_map:
-        nested = dict(tracking_config.get(provider) or {})
-        nested["status_map"] = status_map
-        tracking_config[provider] = nested
+        tracking_config = _attach_status_map(tracking_config, provider, status_map)
+
+    # Auto-discover board columns so kanban → tracker sync works on short boards
+    creds = _tracking_credentials(workflow_id, provider, tracking_config)
+    discovered = discover_tracking_status_map(provider, creds)
+    if discovered.get("ok") and discovered.get("status_map"):
+        tracking_config = _attach_status_map(
+            tracking_config,
+            provider,
+            discovered["status_map"],
+        )
 
     try:
         wf = _repo().update_workflow(
@@ -380,7 +427,7 @@ def clear_tracking(workflow_id: str):
 
 @router.post("/api/workflows/{workflow_id}/tracking/test")
 def test_tracking(workflow_id: str, body: TrackingTestBody = TrackingTestBody()):
-    """Probe Jira / Plane credentials (stored + draft form values)."""
+    """Probe Jira / Plane credentials and refresh status_map from the live board."""
     wf = _repo().get_workflow(workflow_id)
     if not wf:
         raise HTTPException(404, "Workflow not found")
@@ -392,27 +439,84 @@ def test_tracking(workflow_id: str, body: TrackingTestBody = TrackingTestBody())
             "message": "Save a Jira or Plane tracking connection before testing",
         }
 
-    existing = dict(wf.tracking_config or {})
-    nested = dict(existing.get(provider) or {})
-    flat = {
-        k: v
-        for k, v in existing.items()
-        if k not in ("provider", "jira", "plane", "label", "status_map")
-    }
-    credentials: dict[str, str] = {
-        **{k: str(v) for k, v in flat.items() if v is not None},
-        **{k: str(v) for k, v in nested.items() if k != "status_map" and v is not None},
-    }
-    # Inject stored secrets
-    credentials.update({k: v for k, v in resolve_tracking_secrets(workflow_id, provider).items() if v})
+    credentials = _tracking_credentials(workflow_id, provider, wf.tracking_config)
     # Draft config/secrets override
     for k, v in (body.config or {}).items():
-        if v:
+        if v and k != "status_map":
             credentials[k] = str(v)
     for k, v in (body.secrets or {}).items():
         if v and not str(v).startswith("(stored"):
             credentials[k] = str(v)
-    return test_tracking_connection(provider, credentials)
+
+    result = test_tracking_connection(provider, credentials)
+    if not result.get("ok"):
+        return result
+
+    discovered = discover_tracking_status_map(provider, credentials)
+    if discovered.get("ok") and discovered.get("status_map"):
+        tracking_config = _attach_status_map(
+            dict(wf.tracking_config or {}),
+            provider,
+            discovered["status_map"],
+        )
+        try:
+            _repo().update_workflow(
+                workflow_id,
+                {
+                    "tracking_provider": provider,
+                    "tracking_config": tracking_config,
+                },
+            )
+        except ValueError:
+            pass
+        result = {
+            **result,
+            "status_map": discovered["status_map"],
+            "available_statuses": discovered.get("available") or [],
+            "message": f"{result.get('message')} · {discovered.get('message')}",
+        }
+    return result
+
+
+@router.post("/api/workflows/{workflow_id}/tracking/sync-status-map")
+def sync_tracking_status_map(workflow_id: str):
+    """Re-discover and persist SDLC → board status_map for the active tracker."""
+    wf = _repo().get_workflow(workflow_id)
+    if not wf:
+        raise HTTPException(404, "Workflow not found")
+    provider = (wf.tracking_provider or "").strip().lower()
+    if provider not in TRACKING_PROVIDERS:
+        raise HTTPException(400, "No Jira/Plane tracking connection configured")
+
+    credentials = _tracking_credentials(workflow_id, provider, wf.tracking_config)
+    discovered = discover_tracking_status_map(provider, credentials)
+    if not discovered.get("ok"):
+        return {
+            "ok": False,
+            "provider": provider,
+            "message": discovered.get("message") or "Status map discovery failed",
+        }
+
+    tracking_config = _attach_status_map(
+        dict(wf.tracking_config or {}),
+        provider,
+        discovered["status_map"],
+    )
+    wf = _repo().update_workflow(
+        workflow_id,
+        {
+            "tracking_provider": provider,
+            "tracking_config": tracking_config,
+        },
+    )
+    return {
+        "ok": True,
+        "provider": provider,
+        "status_map": discovered["status_map"],
+        "available": discovered.get("available") or [],
+        "message": discovered.get("message"),
+        "workflow": _workflow_payload(workflow_id, wf),
+    }
 
 
 @router.post("/api/workflows/{workflow_id}/chats")

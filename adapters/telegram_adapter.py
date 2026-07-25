@@ -11,12 +11,14 @@ from typing import Optional
 import aiohttp
 
 from adapters.base import ChannelAdapter, Message, MessageHandler
+from adapters.outbound import edit_with_split, send_with_split
 
 logger = logging.getLogger(__name__)
 
 
 class TelegramAdapter(ChannelAdapter):
     platform = "telegram"
+    max_message_length = 4000
 
     def __init__(
         self,
@@ -93,13 +95,19 @@ class TelegramAdapter(ChannelAdapter):
                     await asyncio.sleep(3)
 
     async def send_message(self, channel_id: str, content: str) -> Optional[str]:
+        return await send_with_split(self, channel_id, content)
+
+    async def edit_message(self, channel_id: str, message_id: str, content: str) -> bool:
+        return await edit_with_split(self, channel_id, message_id, content)
+
+    async def _deliver_message(self, channel_id: str, content: str) -> Optional[str]:
         if not self.bot_token:
             logger.info("[Telegram stub] %s: %s", channel_id, content[:80])
             return None
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 f"{self._base}/sendMessage",
-                json={"chat_id": channel_id, "text": content[:4000]},
+                json={"chat_id": channel_id, "text": content},
             ) as resp:
                 data = await resp.json()
         if data.get("ok"):
@@ -107,7 +115,9 @@ class TelegramAdapter(ChannelAdapter):
         logger.error("Telegram send failed: %s", data)
         return None
 
-    async def edit_message(self, channel_id: str, message_id: str, content: str) -> bool:
+    async def _deliver_edit(
+        self, channel_id: str, message_id: str, content: str
+    ) -> bool:
         if not self.bot_token:
             return True
         async with aiohttp.ClientSession() as session:
@@ -116,7 +126,7 @@ class TelegramAdapter(ChannelAdapter):
                 json={
                     "chat_id": channel_id,
                     "message_id": int(message_id),
-                    "text": content[:4000],
+                    "text": content,
                 },
             ) as resp:
                 data = await resp.json()

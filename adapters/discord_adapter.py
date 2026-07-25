@@ -15,6 +15,7 @@ import discord
 from discord.ext import commands
 
 from adapters.base import ChannelAdapter, Message, MessageHandler
+from adapters.outbound import edit_with_split, send_with_split
 
 
 DISCORD_API = "https://discord.com/api/v10"
@@ -36,6 +37,8 @@ def _discord_token() -> str:
 
 class DiscordAdapter(ChannelAdapter):
     """Adapter for Discord using discord.py gateway + REST fallback."""
+
+    max_message_length = 1900
 
     def __init__(self, channel_map: dict[str, str]):
         """
@@ -103,15 +106,29 @@ class DiscordAdapter(ChannelAdapter):
     # ── Sending ──────────────────────────────────────────────────────
 
     async def send_message(self, channel_id: str, content: str) -> Optional[str]:
-        payload = {"content": str(content)[:1900]}
-        result = await self._discord_api("POST", f"/channels/{channel_id}/messages", payload)
+        return await send_with_split(self, channel_id, content)
+
+    async def edit_message(self, channel_id: str, message_id: str, content: str) -> bool:
+        return await edit_with_split(self, channel_id, message_id, content)
+
+    async def _deliver_message(self, channel_id: str, content: str) -> Optional[str]:
+        payload = {"content": str(content)}
+        result = await self._discord_api(
+            "POST", f"/channels/{channel_id}/messages", payload
+        )
         if result and isinstance(result, dict) and "id" in result:
             return result["id"]
         return None
 
-    async def edit_message(self, channel_id: str, message_id: str, content: str) -> bool:
-        payload = {"content": str(content)[:1900]}
-        result = await self._discord_api("PATCH", f"/channels/{channel_id}/messages/{message_id}", payload)
+    async def _deliver_edit(
+        self, channel_id: str, message_id: str, content: str
+    ) -> bool:
+        payload = {"content": str(content)}
+        result = await self._discord_api(
+            "PATCH",
+            f"/channels/{channel_id}/messages/{message_id}",
+            payload,
+        )
         return result is not None
 
     async def send_typing(self, channel_id: str):

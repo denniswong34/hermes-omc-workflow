@@ -37,6 +37,10 @@ class TicketTracker(ABC):
     async def update_status(self, external_id: str, status: SdlcStatus) -> bool:
         ...
 
+    async def add_comment(self, external_id: str, body: str) -> bool:
+        """Append a comment to the external ticket. Default: unsupported."""
+        return False
+
     def detect_status(self, text: str) -> Optional[SdlcStatus]:
         return detect_status(text)
 

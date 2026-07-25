@@ -10,6 +10,7 @@ import logging
 from typing import Optional
 
 from adapters.base import ChannelAdapter, Message, MessageHandler
+from adapters.outbound import edit_with_split, send_with_split
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +19,7 @@ class SlackAdapter(ChannelAdapter):
     """Adapter for Slack using Bolt SDK Socket Mode."""
 
     platform = "slack"
+    max_message_length = 3900
 
     def __init__(
         self,
@@ -80,13 +82,21 @@ class SlackAdapter(ChannelAdapter):
                 pass
 
     async def send_message(self, channel_id: str, content: str) -> Optional[str]:
+        return await send_with_split(self, channel_id, content)
+
+    async def edit_message(self, channel_id: str, message_id: str, content: str) -> bool:
+        return await edit_with_split(self, channel_id, message_id, content)
+
+    async def _deliver_message(self, channel_id: str, content: str) -> Optional[str]:
         if not self._app:
             logger.info("[Slack stub] send %s: %s", channel_id, content[:80])
             return None
         resp = await self._app.client.chat_postMessage(channel=channel_id, text=content)
         return resp.get("ts")
 
-    async def edit_message(self, channel_id: str, message_id: str, content: str) -> bool:
+    async def _deliver_edit(
+        self, channel_id: str, message_id: str, content: str
+    ) -> bool:
         if not self._app:
             return True
         await self._app.client.chat_update(

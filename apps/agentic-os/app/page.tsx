@@ -1,5 +1,6 @@
 import { apiGet } from "@/lib/api";
 import Link from "next/link";
+import { BridgePanel } from "@/components/BridgePanel";
 
 export const dynamic = "force-dynamic";
 
@@ -31,11 +32,11 @@ export default async function HomePage() {
     <div>
       <h1>Overview</h1>
       <p className="muted">
-        Multi-workflow control plane — activate several SDLC companies, pick reasoning engines, enable MCP tools.
+        Multi-workflow control plane — activate SDLC companies, pick engines, enable MCP tools.
       </p>
       {err ? (
         <div className="panel error">
-          API unreachable ({err}). Start with <code>python -m apps.api.main</code> on port 8787.
+          API unreachable ({err}). Start with <code>python -m apps.api.main</code> (port 8790).
         </div>
       ) : (
         <>
@@ -50,19 +51,24 @@ export default async function HomePage() {
               <p>{(runtime.channel_index || []).length} owned channel(s)</p>
             </div>
           </div>
-          <h2 style={{ marginTop: "1.5rem" }}>Active workflows</h2>
+
+          <BridgePanel />
+
+          <h2 className="section-title">Active workflows</h2>
           {active.length === 0 ? (
             <p className="muted">
               None active. <Link href="/workflows">Activate or clone SDLC Workflow</Link>
             </p>
           ) : (
-            <ul>
+            <ul className="link-list">
               {active.map((w) => (
                 <li key={w.id}>
-                  <Link href={`/workflows/${w.id}`}>
-                    {w.name}
-                  </Link>{" "}
-                  — engine <code>{w.reasoning_engine}</code>, memory <code>{w.memory_provider}</code>
+                  <Link href={`/workflows/${w.id}`}>{w.name}</Link>
+                  <span className="muted">
+                    {" "}
+                    — engine <code>{w.reasoning_engine}</code>, memory{" "}
+                    <code>{w.memory_provider}</code>
+                  </span>
                 </li>
               ))}
             </ul>

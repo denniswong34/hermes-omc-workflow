@@ -1,0 +1,132 @@
+# SDLC E2E — CI/CD pipeline
+# On push/PR: runs unit tests (no external token needed).
+# On workflow_dispatch: runs the Discord SDLC E2E suite against staging.
+#
+# To execute the E2E test against your staging Discord guild:
+#   gh workflow run sdlc-e2e.yml -f environment=staging
+# (Set DISCORD_BOT_TOKEN in GitHub Secrets -> repo Settings -> Secrets and variables -> Actions)
+
+name: SDLC E2E
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment for E2E
+        required: false
+        default: staging
+        type: choice
+        options:
+          - staging
+          - production
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  # -------------------------------------------------------------------
+  # Job 1: Unit tests (fast, mocked, no token)
+  # -------------------------------------------------------------------
+  unit-tests:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt fastapi uvicorn pyyaml pydantic aiohttp apscheduler discord.py
+
+      - name: Run unit tests
+        run: |
+          python -m unittest discover tests -p "test_*.py" -v
+
+  # -------------------------------------------------------------------
+  # Job 2: E2E smoke test against staging Discord
+  # -------------------------------------------------------------------
+  e2e-staging:
+    name: E2E - Discord staging
+    if: github.event_name == 'workflow_dispatch' && inputs.environment == 'staging'
+    runs-on: ubuntu-latest
+    needs: [unit-tests]
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt fastapi uvicorn pyyaml pydantic aiohttp apscheduler discord.py
+
+      - name: Run Discord SDLC E2E
+        env:
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          SDLC_RUN_TAG: SDLC-E2E-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          bash scripts/run-e2e.sh
+
+      - name: Upload test log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-output
+          path: tests/sdlc_discord_e2e.py
+
+  # -------------------------------------------------------------------
+  # Job 3: Package E2E release artifact (deployable)
+  # -------------------------------------------------------------------
+  package:
+    name: Package E2E artifact
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    needs: [unit-tests]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Bundle E2E test artifact
+        run: |
+          ARTIFACT_DIR="sdlc-e2e-package"
+          mkdir -p "$ARTIFACT_DIR/tests/fixtures/e2e-vault/OMC/tasks"
+
+          # Core test
+          cp tests/sdlc_discord_e2e.py "$ARTIFACT_DIR/tests/"
+
+          # Fixtures
+          cp tests/fixtures/omc.e2e.yaml "$ARTIFACT_DIR/tests/fixtures/"
+          cp tests/fixtures/e2e-task_map.json "$ARTIFACT_DIR/tests/fixtures/"
+          cp tests/fixtures/e2e-vault/OMC/_index.md "$ARTIFACT_DIR/tests/fixtures/e2e-vault/OMC/"
+          cp tests/fixtures/e2e-vault/OMC/tasks/TASK-001.md "$ARTIFACT_DIR/tests/fixtures/e2e-vault/OMC/tasks/"
+
+          # Runner script
+          cp scripts/run-e2e.sh "$ARTIFACT_DIR/"
+
+          # Dependencies
+          cp requirements.txt "$ARTIFACT_DIR/"
+
+          tar czf sdlc-e2e.tar.gz "$ARTIFACT_DIR"
+
+      - name: Upload packaged artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdlc-e2e-package
+          path: sdlc-e2e.tar.gz

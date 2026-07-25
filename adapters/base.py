@@ -42,6 +42,9 @@ MessageHandler = Callable[[Message], None]
 class ChannelAdapter(ABC):
     """Plug-in interface for a chat platform."""
 
+    #: Soft max characters per outbound message (adapters may split longer text).
+    max_message_length: int = 1900
+
     # ── Lifecycle ────────────────────────────────────────────────────
 
     @abstractmethod
@@ -56,11 +59,11 @@ class ChannelAdapter(ABC):
 
     @abstractmethod
     async def send_message(self, channel_id: str, content: str) -> Optional[str]:
-        """Send a message. Returns the message ID on success."""
+        """Send a message (may split). Returns the first message ID on success."""
 
     @abstractmethod
     async def edit_message(self, channel_id: str, message_id: str, content: str) -> bool:
-        """Edit an existing message. Returns True on success."""
+        """Edit an existing message; overflow chunks are sent as new messages."""
 
     @abstractmethod
     async def send_typing(self, channel_id: str):

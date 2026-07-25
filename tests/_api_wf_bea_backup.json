@@ -1,0 +1,597 @@
+﻿{
+    "id":  "wf_bea284cf7353",
+    "name":  "SDLC Company",
+    "description":  "",
+    "is_active":  true,
+    "reasoning_engine":  "hermes",
+    "coding_default":  "hermes",
+    "coding_workspace":  "",
+    "memory_provider":  "hermes",
+    "memory_config":  {
+                          "root_folder":  "OMC"
+                      },
+    "tracking_provider":  "jira",
+    "tracking_config":  {
+                            "jira":  {
+                                         "base_url":  "https://denniswongdev.atlassian.net",
+                                         "email":  "denniswong1986@gmail.com",
+                                         "project_key":  "HOAO",
+                                         "status_map":  {
+                                                            "backlog":  "To Do",
+                                                            "todo":  "To Do",
+                                                            "in_progress":  "In Progress",
+                                                            "in_review":  "In Review",
+                                                            "qa_review":  "In Review",
+                                                            "qa_failed":  "In Progress",
+                                                            "qa_verified":  "In Review",
+                                                            "ready_to_deploy":  "Done",
+                                                            "deployed":  "Done",
+                                                            "done":  "Done",
+                                                            "cancelled":  "Done"
+                                                        }
+                                     },
+                            "label":  "Jira #1"
+                        },
+    "routes":  {
+                   "pm":  [
+                              "sa",
+                              "devops",
+                              "marketing",
+                              "coder"
+                          ],
+                   "sa":  [
+                              "pm",
+                              "coder",
+                              "qa"
+                          ],
+                   "coder":  [
+                                 "sa",
+                                 "qa",
+                                 "devops"
+                             ],
+                   "qa":  [
+                              "sa",
+                              "coder",
+                              "devops"
+                          ],
+                   "devops":  [
+                                  "pm",
+                                  "coder",
+                                  "qa"
+                              ],
+                   "marketing":  [
+                                     "pm"
+                                 ],
+                   "standup":  [
+
+                               ],
+                   "hermes":  [
+                                  "sa",
+                                  "qa",
+                                  "devops"
+                              ],
+                   "claude":  [
+                                  "sa",
+                                  "qa",
+                                  "devops"
+                              ],
+                   "cursor":  [
+                                  "sa",
+                                  "qa",
+                                  "devops"
+                              ],
+                   "opencode":  [
+                                    "sa",
+                                    "qa",
+                                    "devops"
+                                ],
+                   "codex":  [
+                                 "sa",
+                                 "qa",
+                                 "devops"
+                             ]
+               },
+    "status_authority":  {
+                             "pm":  [
+                                        "backlog",
+                                        "todo",
+                                        "done",
+                                        "cancelled"
+                                    ],
+                             "sa":  [
+                                        "todo",
+                                        "in progress"
+                                    ],
+                             "coder":  [
+                                           "in progress",
+                                           "in review"
+                                       ],
+                             "qa":  [
+                                        "qa review",
+                                        "qa failed",
+                                        "qa verified",
+                                        "ready to deploy"
+                                    ],
+                             "devops":  [
+                                            "ready to deploy",
+                                            "deployed"
+                                        ],
+                             "marketing":  [
+
+                                           ],
+                             "standup":  [
+
+                                         ],
+                             "hermes":  [
+                                            "in progress",
+                                            "in review"
+                                        ],
+                             "claude":  [
+                                            "in progress",
+                                            "in review"
+                                        ],
+                             "cursor":  [
+                                            "in progress",
+                                            "in review"
+                                        ],
+                             "opencode":  [
+                                              "in progress",
+                                              "in review"
+                                          ],
+                             "codex":  [
+                                           "in progress",
+                                           "in review"
+                                       ]
+                         },
+    "playbooks":  {
+                      "feature":  [
+                                      "pm",
+                                      "sa",
+                                      "coder",
+                                      "qa",
+                                      "devops"
+                                  ],
+                      "bug":  [
+                                  "pm",
+                                  "sa",
+                                  "coder",
+                                  "qa"
+                              ]
+                  },
+    "agents":  [
+                   {
+                       "id":  "ag_e13ff168a76b",
+                       "workflow_id":  "wf_bea284cf7353",
+                       "role_id":  "claude",
+                       "display_name":  "Claude",
+                       "mention":  "Claude",
+                       "kind":  "coding",
+                       "persona_file":  "coder.md",
+                       "reasoning_engine":  null,
+                       "coding_backend":  "claude",
+                       "tools":  [
+
+                                 ],
+                       "mcp_allowlist":  [
+
+                                         ]
+                   },
+                   {
+                       "id":  "ag_6f4eff984782",
+                       "workflow_id":  "wf_bea284cf7353",
+                       "role_id":  "coder",
+                       "display_name":  "Coder",
+                       "mention":  "Coder",
+                       "kind":  "coding",
+                       "persona_file":  "coder.md",
+                       "reasoning_engine":  null,
+                       "coding_backend":  null,
+                       "tools":  [
+
+                                 ],
+                       "mcp_allowlist":  [
+
+                                         ]
+                   },
+                   {
+                       "id":  "ag_42a28949a165",
+                       "workflow_id":  "wf_bea284cf7353",
+                       "role_id":  "codex",
+                       "display_name":  "Codex",
+                       "mention":  "Codex",
+                       "kind":  "coding",
+                       "persona_file":  "coder.md",
+                       "reasoning_engine":  null,
+                       "coding_backend":  "codex",
+                       "tools":  [
+
+                                 ],
+                       "mcp_allowlist":  [
+
+                                         ]
+                   },
+                   {
+                       "id":  "ag_085e78dbd4ec",
+                       "workflow_id":  "wf_bea284cf7353",
+                       "role_id":  "cursor",
+                       "display_name":  "Cursor",
+                       "mention":  "Cursor",
+                       "kind":  "coding",
+                       "persona_file":  "coder.md",
+                       "reasoning_engine":  null,
+                       "coding_backend":  "cursor",
+                       "tools":  [
+
+                                 ],
+                       "mcp_allowlist":  [
+
+                                         ]
+                   },
+                   {
+                       "id":  "ag_b4d978366939",
+                       "workflow_id":  "wf_bea284cf7353",
+                       "role_id":  "devops",
+                       "display_name":  "DevOps",
+                       "mention":  "DevOps",
+                       "kind":  "persona",
+                       "persona_file":  "devops.md",
+                       "reasoning_engine":  null,
+                       "coding_backend":  null,
+                       "tools":  [
+
+                                 ],
+                       "mcp_allowlist":  [
+
+                                         ]
+                   },
+                   {
+                       "id":  "ag_589954c0d32f",
+                       "workflow_id":  "wf_bea284cf7353",
+                       "role_id":  "hermes",
+                       "display_name":  "Hermes",
+                       "mention":  "Hermes",
+                       "kind":  "coding",
+                       "persona_file":  "coder.md",
+                       "reasoning_engine":  null,
+                       "coding_backend":  "hermes",
+                       "tools":  [
+
+                                 ],
+                       "mcp_allowlist":  [
+
+                                         ]
+                   },
+                   {
+                       "id":  "ag_b9bbd1e071e9",
+                       "workflow_id":  "wf_bea284cf7353",
+                       "role_id":  "legal",
+                       "display_name":  "Legal Counsel",
+                       "mention":  "Legal",
+                       "kind":  "persona",
+                       "persona_file":  "legal.md",
+                       "reasoning_engine":  null,
+                       "coding_backend":  null,
+                       "tools":  [
+
+                                 ],
+                       "mcp_allowlist":  [
+
+                                         ]
+                   },
+                   {
+                       "id":  "ag_42d3ef406771",
+                       "workflow_id":  "wf_bea284cf7353",
+                       "role_id":  "marketing",
+                       "display_name":  "Marketing",
+                       "mention":  "Marketing",
+                       "kind":  "persona",
+                       "persona_file":  "marketing.md",
+                       "reasoning_engine":  null,
+                       "coding_backend":  null,
+                       "tools":  [
+
+                                 ],
+                       "mcp_allowlist":  [
+
+                                         ]
+                   },
+                   {
+                       "id":  "ag_7c31c4c62ddb",
+                       "workflow_id":  "wf_bea284cf7353",
+                       "role_id":  "opencode",
+                       "display_name":  "OpenCode",
+                       "mention":  "OpenCode",
+                       "kind":  "coding",
+                       "persona_file":  "coder.md",
+                       "reasoning_engine":  null,
+                       "coding_backend":  "opencode",
+                       "tools":  [
+
+                                 ],
+                       "mcp_allowlist":  [
+
+                                         ]
+                   },
+                   {
+                       "id":  "ag_aa4a4bcf362f",
+                       "workflow_id":  "wf_bea284cf7353",
+                       "role_id":  "pm",
+                       "display_name":  "Product Manager",
+                       "mention":  "PM",
+                       "kind":  "persona",
+                       "persona_file":  "pm.md",
+                       "reasoning_engine":  "claude",
+                       "coding_backend":  null,
+                       "tools":  [
+
+                                 ],
+                       "mcp_allowlist":  [
+
+                                         ]
+                   },
+                   {
+                       "id":  "ag_57332f45aa50",
+                       "workflow_id":  "wf_bea284cf7353",
+                       "role_id":  "qa",
+                       "display_name":  "QA",
+                       "mention":  "QA",
+                       "kind":  "persona",
+                       "persona_file":  "qa.md",
+                       "reasoning_engine":  null,
+                       "coding_backend":  null,
+                       "tools":  [
+
+                                 ],
+                       "mcp_allowlist":  [
+
+                                         ]
+                   },
+                   {
+                       "id":  "ag_cedcf94732c5",
+                       "workflow_id":  "wf_bea284cf7353",
+                       "role_id":  "sa",
+                       "display_name":  "Systems Analyst",
+                       "mention":  "SA",
+                       "kind":  "persona",
+                       "persona_file":  "sa.md",
+                       "reasoning_engine":  null,
+                       "coding_backend":  null,
+                       "tools":  [
+
+                                 ],
+                       "mcp_allowlist":  [
+
+                                         ]
+                   },
+                   {
+                       "id":  "ag_fd93bf3b3485",
+                       "workflow_id":  "wf_bea284cf7353",
+                       "role_id":  "standup",
+                       "display_name":  "Standup",
+                       "mention":  "Standup",
+                       "kind":  "persona",
+                       "persona_file":  "standup.md",
+                       "reasoning_engine":  null,
+                       "coding_backend":  null,
+                       "tools":  [
+
+                                 ],
+                       "mcp_allowlist":  [
+
+                                         ]
+                   }
+               ],
+    "chats":  [
+                  {
+                      "id":  "ch_27885184386a",
+                      "workflow_id":  "wf_bea284cf7353",
+                      "platform":  "discord",
+                      "label":  "Primary discord",
+                      "credentials_ref":  "wf_bea284cf7353",
+                      "config":  {
+
+                                 },
+                      "connection_fields":  [
+                                                {
+                                                    "key":  "DISCORD_BOT_TOKEN",
+                                                    "label":  "Bot token",
+                                                    "kind":  "secret",
+                                                    "input":  "password"
+                                                }
+                                            ],
+                      "stored_secrets":  {
+                                             "DISCORD_BOT_TOKEN":  true
+                                         },
+                      "connection_values":  {
+                                                "DISCORD_BOT_TOKEN":  ""
+                                            }
+                  }
+              ],
+    "channels":  [
+                     {
+                         "id":  "cn_3b21acdcd283",
+                         "workflow_id":  "wf_bea284cf7353",
+                         "chat_id":  "ch_27885184386a",
+                         "name":  "engineering",
+                         "external_id":  "1530436643662594179",
+                         "agents":  [
+                                        "pm",
+                                        "sa",
+                                        "coder",
+                                        "qa",
+                                        "devops",
+                                        "hermes",
+                                        "claude",
+                                        "cursor",
+                                        "opencode",
+                                        "codex"
+                                    ],
+                         "ticket_create_roles":  [
+                                                     "pm",
+                                                     "sa"
+                                                 ],
+                         "platform":  "discord"
+                     },
+                     {
+                         "id":  "cn_59ee72d72a8e",
+                         "workflow_id":  "wf_bea284cf7353",
+                         "chat_id":  "ch_27885184386a",
+                         "name":  "marketing",
+                         "external_id":  "1528310499773648968",
+                         "agents":  [
+                                        "pm",
+                                        "marketing"
+                                    ],
+                         "ticket_create_roles":  [
+                                                     "pm"
+                                                 ],
+                         "platform":  "discord"
+                     },
+                     {
+                         "id":  "cn_61fbbbc07d19",
+                         "workflow_id":  "wf_bea284cf7353",
+                         "chat_id":  "ch_27885184386a",
+                         "name":  "product",
+                         "external_id":  "1530436585022160968",
+                         "agents":  [
+                                        "pm",
+                                        "sa"
+                                    ],
+                         "ticket_create_roles":  [
+                                                     "pm",
+                                                     "sa"
+                                                 ],
+                         "platform":  "discord"
+                     },
+                     {
+                         "id":  "cn_1065c8402a41",
+                         "workflow_id":  "wf_bea284cf7353",
+                         "chat_id":  "ch_27885184386a",
+                         "name":  "standup",
+                         "external_id":  "1530436787485278228",
+                         "agents":  [
+                                        "standup"
+                                    ],
+                         "ticket_create_roles":  [
+
+                                                 ],
+                         "platform":  "discord"
+                     },
+                     {
+                         "id":  "cn_d469a837a362",
+                         "workflow_id":  "wf_bea284cf7353",
+                         "chat_id":  "ch_27885184386a",
+                         "name":  "support",
+                         "external_id":  "1530436828098724011",
+                         "agents":  [
+                                        "pm",
+                                        "sa",
+                                        "coder",
+                                        "qa",
+                                        "hermes",
+                                        "claude",
+                                        "cursor",
+                                        "opencode",
+                                        "codex"
+                                    ],
+                         "ticket_create_roles":  [
+                                                     "pm",
+                                                     "sa"
+                                                 ],
+                         "platform":  "discord"
+                     }
+                 ],
+    "cron_jobs":  [
+                      {
+                          "id":  "cron_9e79972a8cf0",
+                          "workflow_id":  "wf_bea284cf7353",
+                          "name":  "Daily PM standup",
+                          "cron_expr":  "0 9 * * 1-5",
+                          "agent_role":  "pm",
+                          "channel_name":  "standup",
+                          "prompt":  "@PM Please post a concise daily project status digest for the Boss.",
+                          "enabled":  true
+                      }
+                  ],
+    "mcp_servers":  [
+                        {
+                            "id":  "mw_d3151c3a5c4b",
+                            "catalog_id":  "mcp-filesystem",
+                            "enabled":  true,
+                            "config":  {
+
+                                       },
+                            "name":  "Filesystem",
+                            "description":  "Read/write files in a sandbox directory",
+                            "transport":  "stdio",
+                            "command":  [
+                                            "npx",
+                                            "-y",
+                                            "@modelcontextprotocol/server-filesystem",
+                                            "."
+                                        ],
+                            "docs_url":  "https://github.com/modelcontextprotocol/servers"
+                        }
+                    ],
+    "created_at":  "2026-07-25T01:42:28Z",
+    "updated_at":  "2026-07-25T09:15:57Z",
+    "tracking":  {
+                     "provider":  "jira",
+                     "label":  "Jira #1",
+                     "config":  {
+                                    "base_url":  "https://denniswongdev.atlassian.net",
+                                    "email":  "denniswong1986@gmail.com",
+                                    "project_key":  "HOAO",
+                                    "status_map":  {
+                                                       "backlog":  "To Do",
+                                                       "todo":  "To Do",
+                                                       "in_progress":  "In Progress",
+                                                       "in_review":  "In Review",
+                                                       "qa_review":  "In Review",
+                                                       "qa_failed":  "In Progress",
+                                                       "qa_verified":  "In Review",
+                                                       "ready_to_deploy":  "Done",
+                                                       "deployed":  "Done",
+                                                       "done":  "Done",
+                                                       "cancelled":  "Done"
+                                                   }
+                                },
+                     "connection_fields":  [
+                                               {
+                                                   "key":  "base_url",
+                                                   "label":  "Base URL",
+                                                   "kind":  "config",
+                                                   "input":  "text"
+                                               },
+                                               {
+                                                   "key":  "email",
+                                                   "label":  "Email",
+                                                   "kind":  "config",
+                                                   "input":  "text"
+                                               },
+                                               {
+                                                   "key":  "project_key",
+                                                   "label":  "Project key",
+                                                   "kind":  "config",
+                                                   "input":  "text"
+                                               },
+                                               {
+                                                   "key":  "api_token",
+                                                   "label":  "API token",
+                                                   "kind":  "secret",
+                                                   "input":  "password",
+                                                   "secret_env":  "JIRA_API_TOKEN"
+                                               }
+                                           ],
+                     "stored_secrets":  {
+                                            "api_token":  true
+                                        },
+                     "connection_values":  {
+                                               "base_url":  "https://denniswongdev.atlassian.net",
+                                               "email":  "denniswong1986@gmail.com",
+                                               "project_key":  "HOAO",
+                                               "api_token":  ""
+                                           },
+                     "configured":  true
+                 }
+}

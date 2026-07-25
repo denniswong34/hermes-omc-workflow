@@ -1,12 +1,15 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { buildFormatPreview } from "@/lib/messageFormatPreview";
 
 export type ConnField = {
   key: string;
   label: string;
   kind: "secret" | "config";
   input: string;
+  default?: string;
+  options?: { value: string; label: string }[];
 };
 
 export type ChannelDraft = {
@@ -123,14 +126,22 @@ export function ChatConnectionDialog({
 
   const fields = fieldsByPlatform[platform] || [];
   const visibleChannels = channels.filter((c) => !c._delete);
-  const currentForm = (): ChatConnectionForm => ({
-    id: initial.id,
-    label,
-    platform,
-    values,
-    storedSecrets: initial.storedSecrets,
-    channels,
-  });
+  const currentForm = (): ChatConnectionForm => {
+    const nextValues = { ...values };
+    for (const f of fields) {
+      if (f.input === "select" && !nextValues[f.key] && f.default) {
+        nextValues[f.key] = f.default;
+      }
+    }
+    return {
+      id: initial.id,
+      label,
+      platform,
+      values: nextValues,
+      storedSecrets: initial.storedSecrets,
+      channels,
+    };
+  };
 
   async function handleTest() {
     if (!onTestConnection || !initial.id) return;
@@ -254,6 +265,40 @@ export function ChatConnectionDialog({
               )}
               {fields.map((f) => {
                 const stored = !!initial.storedSecrets?.[f.key];
+                if (f.input === "select" && f.options?.length) {
+                  const current =
+                    values[f.key] || f.default || f.options[0]?.value || "";
+                  const isMessageFormat = f.key === "message_format";
+                  const preview = isMessageFormat
+                    ? buildFormatPreview(current)
+                    : null;
+                  return (
+                    <div key={f.key} className="field-stack">
+                      <label>
+                        {f.label}
+                        <select
+                          value={current}
+                          onChange={(e) =>
+                            setValues({ ...values, [f.key]: e.target.value })
+                          }
+                        >
+                          {f.options.map((opt) => (
+                            <option key={opt.value} value={opt.value}>
+                              {opt.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      {isMessageFormat && preview ? (
+                        <MessageFormatPreview
+                          processing={preview.processing}
+                          reply={preview.reply}
+                          handoff={preview.handoff}
+                        />
+                      ) : null}
+                    </div>
+                  );
+                }
                 return (
                   <label key={f.key}>
                     {f.label}
@@ -406,5 +451,46 @@ export function IconTrash({ title = "Remove" }: { title?: string }) {
         strokeLinejoin="round"
       />
     </svg>
+  );
+}
+
+type PreviewProps = {
+  processing: string;
+  reply: string;
+  handoff: string;
+};
+
+function MessageFormatPreview({ processing, reply, handoff }: PreviewProps) {
+  const [tab, setTab] = useState<"processing" | "reply" | "handoff">("reply");
+  const text =
+    tab === "processing" ? processing : tab === "handoff" ? handoff : reply;
+
+  return (
+    <div className="format-preview" aria-live="polite">
+      <div className="format-preview-tabs" role="tablist" aria-label="Message format preview">
+        {(
+          [
+            ["processing", "Processing"],
+            ["reply", "Reply"],
+            ["handoff", "Handoff"],
+          ] as const
+        ).map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            role="tab"
+            aria-selected={tab === id}
+            className={tab === id ? "tab active" : "tab"}
+            onClick={() => setTab(id)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <p className="muted format-preview-hint">
+        Live sample of how agent messages will look in chat
+      </p>
+      <pre className="format-preview-body">{text}</pre>
+    </div>
   );
 }

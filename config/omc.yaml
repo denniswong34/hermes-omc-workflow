@@ -102,6 +102,8 @@ tickets:
     project_id: "${PLANE_PROJECT_ID}"
     api_key: "${PLANE_API_KEY}"
     status_map:
+      # Auto-filled on Save / Test Connection from live project states.
+      # Leave blank; discovery maps SDLC stages onto Plane state UUIDs.
       backlog: ""
       todo: ""
       in_progress: ""
@@ -119,6 +121,8 @@ tickets:
     email: "${JIRA_EMAIL}"
     api_token: "${JIRA_API_TOKEN}"
     project_key: "${JIRA_PROJECT_KEY}"
+    # Preferred names; live discovery remaps onto whatever the project actually has
+    # (e.g. short boards: To Do / In Progress / In Review / Done).
     status_map:
       backlog: "Backlog"
       todo: "To Do"

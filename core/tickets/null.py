@@ -35,3 +35,7 @@ class NullTracker(TicketTracker):
     async def update_status(self, external_id: str, status: SdlcStatus) -> bool:
         logger.info(f"NullTracker: would update {external_id[:8]} → {status.display}")
         return True
+
+    async def add_comment(self, external_id: str, body: str) -> bool:
+        logger.info(f"NullTracker: would comment on {external_id[:8]}: {(body or '')[:80]}")
+        return True

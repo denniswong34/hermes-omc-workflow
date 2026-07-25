@@ -39,6 +39,7 @@ import time
 from typing import Any, Callable, Optional
 
 from adapters.base import ChannelAdapter, Message, MessageHandler
+from adapters.outbound import edit_with_split, send_with_split
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +114,8 @@ class ZulipAdapter(ChannelAdapter):
     Maps agent channel names (#pm, #sa, etc.) to Zulip stream names.
     Each agent conversation becomes a topic under that stream.
     """
+
+    max_message_length = MAX_MESSAGE_LENGTH
 
     def __init__(
         self,
@@ -226,32 +229,30 @@ class ZulipAdapter(ChannelAdapter):
     # ------------------------------------------------------------------
 
     async def send_message(self, channel_id: str, content: str) -> Optional[str]:
-        """Send a message to a Zulip stream or DM.
+        """Send a message to a Zulip stream or DM (splits when over limit)."""
+        return await send_with_split(self, channel_id, content)
 
-        ``channel_id`` can be:
-        - ``stream_name`` (e.g. "pm") → sent to stream + default topic
-        - ``stream_name:topic`` → sent to stream + specific topic
-        - ``dm:email@example.com`` → sent as DM
-        """
+    async def edit_message(self, channel_id: str, message_id: str, content: str) -> bool:
+        """Edit first chunk; overflow becomes new messages."""
+        return await edit_with_split(self, channel_id, message_id, content)
+
+    async def _deliver_message(self, channel_id: str, content: str) -> Optional[str]:
         if not self._client:
             logger.error("Zulip client not connected")
             return None
 
         channel_id = channel_id.lstrip("#")
-
-        # DM?
         dm_email = _parse_dm_chat_id(channel_id)
         if dm_email:
             return await self._send_dm(dm_email, content)
 
-        # Stream:topic
         topic = self.topic_prefix + channel_id
         stream_name = self.stream_map.get(channel_id, channel_id)
-
         return await self._send_stream(stream_name, topic, content)
 
-    async def edit_message(self, channel_id: str, message_id: str, content: str) -> bool:
-        """Edit a previously sent message (used for streaming updates)."""
+    async def _deliver_edit(
+        self, channel_id: str, message_id: str, content: str
+    ) -> bool:
         if not self._client:
             return False
         try:
@@ -297,41 +298,35 @@ class ZulipAdapter(ChannelAdapter):
     # ------------------------------------------------------------------
 
     async def _send_stream(self, stream_name: str, topic: str, content: str) -> Optional[str]:
-        """Send a message to a Zulip stream+topic."""
-        chunks = self._split_content(content, MAX_MESSAGE_LENGTH)
-        last_id = None
-        for chunk in chunks:
-            result = await asyncio.to_thread(
-                self._client.send_message,
-                {
-                    "type": "stream",
-                    "to": stream_name,
-                    "topic": topic,
-                    "content": chunk,
-                },
-            )
-            if result.get("result") == "success":
-                last_id = str(result.get("id", ""))
-            else:
-                logger.error("Zulip send error: %s", result.get("msg", ""))
-        return last_id
+        """Send a single chunk to a Zulip stream+topic."""
+        result = await asyncio.to_thread(
+            self._client.send_message,
+            {
+                "type": "stream",
+                "to": stream_name,
+                "topic": topic,
+                "content": content,
+            },
+        )
+        if result.get("result") == "success":
+            return str(result.get("id", ""))
+        logger.error("Zulip send error: %s", result.get("msg", ""))
+        return None
 
     async def _send_dm(self, email: str, content: str) -> Optional[str]:
-        """Send a direct message to a user."""
-        chunks = self._split_content(content, MAX_MESSAGE_LENGTH)
-        last_id = None
-        for chunk in chunks:
-            result = await asyncio.to_thread(
-                self._client.send_message,
-                {
-                    "type": "private",
-                    "to": [email],
-                    "content": chunk,
-                },
-            )
-            if result.get("result") == "success":
-                last_id = str(result.get("id", ""))
-        return last_id
+        """Send a single chunk as a Zulip DM."""
+        result = await asyncio.to_thread(
+            self._client.send_message,
+            {
+                "type": "private",
+                "to": [email],
+                "content": content,
+            },
+        )
+        if result.get("result") == "success":
+            return str(result.get("id", ""))
+        logger.error("Zulip DM send error: %s", result.get("msg", ""))
+        return None
 
     # ------------------------------------------------------------------
     # Internal: event loop
@@ -499,36 +494,3 @@ class ZulipAdapter(ChannelAdapter):
             if sname == stream_name:
                 return channel
         return stream_name  # fallback
-
-    @staticmethod
-    def _split_content(content: str, max_len: int) -> list[str]:
-        """Split long content at natural boundaries."""
-        if len(content) <= max_len:
-            return [content]
-
-        chunks = []
-        while content:
-            if len(content) <= max_len:
-                chunks.append(content)
-                break
-
-            # Try to split at a natural boundary
-            split_at = max_len
-            # Look for double newline first (paragraph boundary)
-            para = content.rfind("\n\n", 0, max_len)
-            if para > max_len // 2:
-                split_at = para + 2  # include the blank line
-            else:
-                # Look for single newline
-                nl = content.rfind("\n", 0, max_len)
-                if nl > max_len // 2:
-                    split_at = nl + 1
-                else:
-                    # Look for space
-                    sp = content.rfind(" ", 0, max_len)
-                    if sp > max_len // 2:
-                        split_at = sp + 1
-
-            chunks.append(content[:split_at])
-            content = content[split_at:]
-        return chunks

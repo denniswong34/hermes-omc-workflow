@@ -13,12 +13,23 @@ from typing import Optional
 from uuid import uuid4
 
 from adapters.base import ChannelAdapter, Message
+from core.chat_messages import (
+    DEFAULT_MESSAGE_FORMAT,
+    format_error,
+    format_handoff,
+    format_processing,
+    format_reply,
+    is_bot_own_message,
+    normalize_message_format,
+    strip_display_prefix,
+)
 from core.coding import CodingRegistry
 from core.memory.obsidian import ObsidianMemoryStore
 from core.sdlc_tracker import SDLCTracker
 from core.task_manager import TaskManager
 from core.tickets.base import TicketTracker
-from core.tickets.status import detect_status
+from core.tickets.draft import draft_ticket, format_agent_comment
+from core.tickets.status import SdlcStatus, detect_status
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +58,8 @@ class AgentRouter:
         ticket_provider: str = "none",
         memory: Optional[ObsidianMemoryStore] = None,
         forward_max_depth: int = 5,
+        message_format: str = DEFAULT_MESSAGE_FORMAT,
+        message_format_by_channel: Optional[dict[str, str]] = None,
     ):
         self.adapter = adapter
         self.topics = topics
@@ -61,9 +74,19 @@ class AgentRouter:
         self.ticket_provider = ticket_provider
         self.memory = memory
         self.forward_max_depth = forward_max_depth
+        self.message_format = normalize_message_format(message_format)
+        self.message_format_by_channel = {
+            str(k): normalize_message_format(v)
+            for k, v in (message_format_by_channel or {}).items()
+        }
 
         self._processed_ids: set[str] = set()
         self._processed_max = 300
+
+    def _format_for_channel(self, channel_id: str) -> str:
+        return self.message_format_by_channel.get(
+            channel_id, self.message_format
+        )
 
     # ── Entry ────────────────────────────────────────────────────────
 
@@ -83,7 +106,7 @@ class AgentRouter:
 
         # Our own posts are already handled (direct handoff enqueue + edited replies)
         raw = msg.content or ""
-        if msg.is_bot and ("**[@" in raw or "Processing..." in raw):
+        if msg.is_bot and is_bot_own_message(raw):
             return
 
         content = self._strip_display_prefix(raw)
@@ -131,8 +154,9 @@ class AgentRouter:
         depth: int,
     ):
         channel_id = msg.channel_id
+        fmt = self._format_for_channel(channel_id)
         ack_id = await self.adapter.send_message(
-            channel_id, f"🔄 **[@{role.upper()}]** Processing..."
+            channel_id, format_processing(role, fmt)
         )
         if not ack_id:
             logger.error(f"Failed to send ack in #{topic_key}")
@@ -147,7 +171,11 @@ class AgentRouter:
         )
 
         ticket_url, external_id, task_id = await self._resolve_ticket(
-            content, role, topic
+            content,
+            role,
+            topic,
+            topic_key=topic_key,
+            author=msg.author_name or "",
         )
         if ticket_url or task_id:
             full_prompt += (
@@ -161,13 +189,19 @@ class AgentRouter:
         if self.memory and task_id:
             try:
                 if not self.memory.get_task(task_id):
+                    draft = draft_ticket(
+                        content,
+                        topic=topic_key,
+                        role=role,
+                        author=msg.author_name or "",
+                    )
                     self.memory.upsert_task(
                         task_id,
-                        title=content.split("\n")[0][:80],
+                        title=draft.title,
                         topic=topic_key,
                         assignee=role,
                         ticket_url=ticket_url or "",
-                        goal=content[:500],
+                        goal=draft.description[:800],
                     )
                 mem = self.memory.build_context_prompt(task_id)
                 if mem:
@@ -184,13 +218,15 @@ class AgentRouter:
         except Exception as e:
             logger.error(f"[{topic_key}/@{role}] invoke error: {e}")
             await self.adapter.edit_message(
-                channel_id, ack_id, f"⚠️ **[@{role.upper()}]** {e}"
+                channel_id, ack_id, format_error(role, str(e), fmt)
             )
             return
 
         if not response:
             await self.adapter.edit_message(
-                channel_id, ack_id, f"⚠️ **[@{role.upper()}]** Empty response."
+                channel_id,
+                ack_id,
+                format_error(role, "Empty response.", fmt),
             )
             return
 
@@ -213,12 +249,32 @@ class AgentRouter:
         if self.sdlc and external_id:
             status = self.sdlc.detect_status(display)
             if status and self.sdlc.allowed_for_role(role, status):
-                await self.sdlc.update_status(external_id, status)
+                synced = await self.sdlc.update_status(external_id, status)
+                if not synced:
+                    logger.warning(
+                        f"SDLC: status sync failed for {external_id} → {status.display}"
+                    )
             elif status:
                 logger.info(
                     f"SDLC: ignored '{status.display}' from @{role} (not in authority)"
                 )
                 status = None
+
+        # Mirror each agent turn onto the external ticket as a comment
+        if self.ticket_tracker and external_id:
+            try:
+                comment = format_agent_comment(
+                    role=role,
+                    topic=topic_key,
+                    body=display,
+                    status=status.display if status else None,
+                    task_id=task_id or "",
+                )
+                ok = await self.ticket_tracker.add_comment(external_id, comment)
+                if not ok:
+                    logger.warning(f"Ticket comment failed for {external_id}")
+            except Exception as e:
+                logger.warning(f"Ticket comment error: {e}")
 
         # Persist shared memory after the turn
         if self.memory and task_id:
@@ -250,15 +306,16 @@ class AgentRouter:
             except Exception as e:
                 logger.warning(f"Memory persist failed: {e}")
 
-        if task_id and task_id not in display:
-            display = f"**{task_id}**\n{display}"
-        if ticket_url:
-            display += f"\n\n🔗 **Ticket:** {ticket_url}"
-        if handoffs:
-            names = ", ".join(f"@{r}" for r, _ in handoffs)
-            display += f"\n\n_↪ Mentioning {names}_"
-
-        display = f"**[@{role.upper()}]**\n{display}"[:1900]
+        display = format_reply(
+            role,
+            display,
+            fmt=fmt,
+            topic=topic_key,
+            task_id=task_id or "",
+            ticket_url=ticket_url or "",
+            status=status.display if status else "",
+            handoffs=[r for r, _ in handoffs],
+        )
         await self.adapter.edit_message(channel_id, ack_id, display)
         logging.info(f"✓ [#{topic_key}/@{role}] {display[:80]}")
 
@@ -297,9 +354,10 @@ class AgentRouter:
         if not re.match(rf"^@{to_role}\b", body, re.IGNORECASE):
             body = f"@{to_role}: {body}"
 
-        posted = (
-            f"**[@{from_role.upper()} → @{to_role.upper()}]** (depth:{depth})\n{body}"
-        )[:1900]
+        fmt = self._format_for_channel(channel_id)
+        posted = format_handoff(
+            from_role, to_role, body, depth=depth, fmt=fmt
+        )
         msg_id = await self.adapter.send_message(channel_id, posted)
 
         synthetic = Message(
@@ -415,7 +473,13 @@ class AgentRouter:
     # ── Tickets ──────────────────────────────────────────────────────
 
     async def _resolve_ticket(
-        self, content: str, role: str, topic: dict
+        self,
+        content: str,
+        role: str,
+        topic: dict,
+        *,
+        topic_key: str = "",
+        author: str = "",
     ) -> tuple[str, Optional[str], str]:
         if self.task_mgr is None:
             return ("", None, "")
@@ -444,8 +508,14 @@ class AgentRouter:
             return ("", None, existing_task or "")
 
         task_id = self.task_mgr.next_task_id()
-        first_line = content.split("\n")[0][:80]
-        issue_name = f"{task_id}: {first_line}"
+        draft = draft_ticket(
+            content,
+            topic=topic_key or str(topic.get("name") or ""),
+            role=role,
+            author=author,
+        )
+        issue_name = draft.title
+        local_name = f"{task_id}: {draft.title}"
 
         url = ""
         external_id = None
@@ -453,7 +523,8 @@ class AgentRouter:
         if self.ticket_tracker is not None:
             ref = await self.ticket_tracker.create_issue(
                 name=issue_name,
-                description=content[:2000],
+                description=draft.description,
+                status=SdlcStatus.TODO,
             )
             if ref:
                 external_id = ref.external_id
@@ -468,31 +539,35 @@ class AgentRouter:
             external_id=external_id,
             url=url,
             key=key,
-            name=issue_name,
+            name=local_name,
             provider=self.ticket_provider,
         )
-        logging.info(f"🎫 Created {task_id} → {url or external_id}")
+        logging.info(f"🎫 Created {task_id} → {url or external_id} ({draft.kind})")
         return (url, external_id, task_id)
 
     # ── Helpers ──────────────────────────────────────────────────────
 
     @staticmethod
     def _strip_display_prefix(content: str) -> str:
-        # **[@PM]** or **[@PM → @SA]** (depth:N)
-        lines = content.split("\n", 1)
-        first = lines[0].strip()
-        if first.startswith("**[@") and first.endswith("**"):
-            return lines[1].strip() if len(lines) > 1 else ""
-        if first.startswith("**[↪"):
-            return lines[1].strip() if len(lines) > 1 else ""
-        return content
+        return strip_display_prefix(content)
 
     @staticmethod
     def _is_agent_handoff_post(content: str) -> bool:
-        first = (content or "").split("\n", 1)[0].strip()
-        return bool(
-            re.match(r"\*\*\[@[A-Za-z].*→.*\]\*\*", first)
-            or re.match(r"\*\*\[↪", first)
+        head = "\n".join((content or "").split("\n", 4)[:4])
+        first = head.split("\n", 1)[0].strip() if head else ""
+        if re.match(r"\*\*\[@[A-Za-z].*→.*\]\*\*", first) or re.match(
+            r"\*\*\[↪", first
+        ):
+            return True
+        if "→" not in head and "HANDOFF" not in head and "handoff" not in head.lower():
+            return False
+        return (
+            first.startswith("╔")
+            or first.startswith("━━")
+            or first.startswith("🔁")
+            or first.startswith("===")
+            or "HANDOFF" in head
+            or "handoff" in head.lower()
         )
 
     @staticmethod
@@ -501,11 +576,24 @@ class AgentRouter:
             return msg.author_id.split(":", 1)[1].lower()
         if msg.author_name.startswith("@") and msg.is_bot:
             return msg.author_name.lstrip("@").lower()
-        # Parse **[@PM → @SA]**
+        # Parse **[@PM → @SA]** or new handoff headers containing FROM → TO
         first = (msg.content or "").split("\n", 1)[0]
         m = re.match(r"\*\*\[@([A-Za-z][A-Za-z0-9_-]*)\s*→", first)
         if m:
             return m.group(1).lower()
+        m2 = re.search(
+            r"(?:AGENT|HANDOFF|🔁\s*\*\*)\s*([A-Za-z][A-Za-z0-9_-]*)\s*→",
+            first,
+            re.IGNORECASE,
+        )
+        if m2:
+            return m2.group(1).lower()
+        m3 = re.search(
+            r"║\s*([A-Za-z][A-Za-z0-9_-]*)\s*→",
+            first,
+        )
+        if m3:
+            return m3.group(1).lower()
         if msg.is_bot:
             return "bot"
         return "human"

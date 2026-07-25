@@ -9,6 +9,7 @@ from typing import Any, Optional
 
 from adapters.base import ChannelAdapter
 from core.agent_router import AgentRouter
+from core.chat_messages import DEFAULT_MESSAGE_FORMAT, normalize_message_format
 from core.coding import create_coding_registry
 from core.config import ROLE_FILES, load_agent_prompt
 from core.db.seed import SDLC_CHANNELS
@@ -68,6 +69,29 @@ def topics_from_runtime(rt: WorkflowRuntime) -> tuple[dict[str, dict], dict[str,
     return topics, topic_by_channel_id, channel_names
 
 
+def message_formats_from_runtime(rt: WorkflowRuntime) -> tuple[str, dict[str, str]]:
+    """
+    Return (default_format, channel_id → message_format) from chat configs.
+    """
+    chat_fmt: dict[str, str] = {}
+    for chat in rt.workflow.chats:
+        cfg = dict(chat.config or {})
+        chat_fmt[chat.id] = normalize_message_format(cfg.get("message_format"))
+
+    by_channel: dict[str, str] = {}
+    formats_seen: list[str] = []
+    for ch in rt.workflow.channels:
+        ext = (ch.external_id or "").strip()
+        if not ext or ext.startswith("REPLACE_"):
+            continue
+        fmt = chat_fmt.get(ch.chat_id) or DEFAULT_MESSAGE_FORMAT
+        by_channel[ext] = fmt
+        formats_seen.append(fmt)
+
+    default = formats_seen[0] if formats_seen else DEFAULT_MESSAGE_FORMAT
+    return default, by_channel
+
+
 def build_agent_router(rt: WorkflowRuntime, adapter: ChannelAdapter) -> AgentRouter:
     """Construct a full AgentRouter for one active workflow."""
     wf = rt.workflow
@@ -107,6 +131,7 @@ def build_agent_router(rt: WorkflowRuntime, adapter: ChannelAdapter) -> AgentRou
         tracker=ticket_tracker,
         status_authority=wf.status_authority or {},
     )
+    default_fmt, fmt_by_channel = message_formats_from_runtime(rt)
 
     return AgentRouter(
         adapter=adapter,
@@ -121,6 +146,8 @@ def build_agent_router(rt: WorkflowRuntime, adapter: ChannelAdapter) -> AgentRou
         ticket_tracker=ticket_tracker,
         ticket_provider=(wf.tracking_provider or "none"),
         memory=rt.memory,
+        message_format=default_fmt,
+        message_format_by_channel=fmt_by_channel,
     )
 
 

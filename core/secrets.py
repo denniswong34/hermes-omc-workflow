@@ -16,23 +16,42 @@ PLATFORM_SECRET_KEYS: dict[str, list[str]] = {
     "telegram": ["TELEGRAM_BOT_TOKEN"],
 }
 
+# Shared Chat apps field: agent message layout (stored in chats.config_json)
+MESSAGE_FORMAT_FIELD: dict[str, Any] = {
+    "key": "message_format",
+    "label": "Message format",
+    "kind": "config",
+    "input": "select",
+    "default": "card",
+    "options": [
+        {"value": "block", "label": "Block (━━ bars)"},
+        {"value": "card", "label": "Card (box header) — default"},
+        {"value": "quote", "label": "Quote (speaker style)"},
+        {"value": "sections", "label": "Sections (FROM/RESPONSE)"},
+    ],
+}
+
 # Connection form fields per platform (shown in Chat apps section)
 # kind: secret → workflow secrets file (chat-scoped); config → chats.config_json
-CHAT_CONNECTION_FIELDS: dict[str, list[dict[str, str]]] = {
+CHAT_CONNECTION_FIELDS: dict[str, list[dict[str, Any]]] = {
     "discord": [
         {"key": "DISCORD_BOT_TOKEN", "label": "Bot token", "kind": "secret", "input": "password"},
+        MESSAGE_FORMAT_FIELD,
     ],
     "slack": [
         {"key": "SLACK_BOT_TOKEN", "label": "Bot token", "kind": "secret", "input": "password"},
         {"key": "SLACK_APP_TOKEN", "label": "App token (Socket Mode)", "kind": "secret", "input": "password"},
+        MESSAGE_FORMAT_FIELD,
     ],
     "telegram": [
         {"key": "TELEGRAM_BOT_TOKEN", "label": "Bot token", "kind": "secret", "input": "password"},
+        MESSAGE_FORMAT_FIELD,
     ],
     "zulip": [
         {"key": "ZULIP_SITE", "label": "Site URL", "kind": "config", "input": "text"},
         {"key": "ZULIP_EMAIL", "label": "Bot email", "kind": "config", "input": "text"},
         {"key": "ZULIP_API_KEY", "label": "API key", "kind": "secret", "input": "password"},
+        MESSAGE_FORMAT_FIELD,
     ],
 }
 
@@ -187,7 +206,7 @@ def secret_fields_for_platforms(platforms: list[str]) -> list[dict[str, str]]:
     return [{"key": k, "label": SECRET_FIELD_META.get(k, k)} for k in keys]
 
 
-def connection_fields_for_platform(platform: str) -> list[dict[str, str]]:
+def connection_fields_for_platform(platform: str) -> list[dict[str, Any]]:
     return list(CHAT_CONNECTION_FIELDS.get((platform or "").lower(), []))
 
 
@@ -210,7 +229,7 @@ def enrich_chat_connection(
             stored_secrets[key] = has
             values[key] = ""
         else:
-            values[key] = str(config.get(key) or "")
+            values[key] = str(config.get(key) or f.get("default") or "")
     out = dict(chat)
     out["connection_fields"] = fields
     out["stored_secrets"] = stored_secrets

@@ -11,6 +11,7 @@ from core.tickets.base import TicketTracker
 from core.tickets.jira import JiraTracker
 from core.tickets.null import NullTracker
 from core.tickets.plane import PlaneTracker
+from core.tickets.status_map import default_jira_status_map, nonempty_status_map
 
 logger = logging.getLogger(__name__)
 
@@ -33,13 +34,14 @@ def create_tracker(tickets_cfg: dict[str, Any] | None) -> TicketTracker:
         if not base_url or not workspace or not project_id:
             logger.warning("Plane config incomplete — falling back to NullTracker")
             return NullTracker()
+        status_map = nonempty_status_map(plane.get("status_map"))
         logger.info(f"Ticket tracker: plane ({workspace}/{project_id})")
         return PlaneTracker(
             base_url=base_url,
             workspace=workspace,
             project_id=project_id,
             api_key=api_key,
-            status_map=plane.get("status_map") or {},
+            status_map=status_map,
         )
 
     if provider == "jira":
@@ -51,13 +53,14 @@ def create_tracker(tickets_cfg: dict[str, Any] | None) -> TicketTracker:
         if not base_url or not email or not api_token or not project_key:
             logger.warning("Jira config incomplete — falling back to NullTracker")
             return NullTracker()
+        status_map = nonempty_status_map(jira.get("status_map")) or default_jira_status_map()
         logger.info(f"Ticket tracker: jira ({project_key})")
         return JiraTracker(
             base_url=base_url,
             email=email,
             api_token=api_token,
             project_key=project_key,
-            status_map=jira.get("status_map") or {},
+            status_map=status_map,
         )
 
     logger.warning(f"Unknown ticket provider '{provider}' — using NullTracker")

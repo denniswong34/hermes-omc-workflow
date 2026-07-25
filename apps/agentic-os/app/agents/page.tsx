@@ -96,7 +96,7 @@ export default function AgentsPage() {
       {err && <div className="panel error">{err}</div>}
       {msg && <div className="panel">{msg}</div>}
 
-      <div className="grid" style={{ gridTemplateColumns: "240px 1fr", gap: "1rem" }}>
+      <div className="grid grid-sidebar">
         <div className="panel">
           <h2>Roles</h2>
           <div style={{ display: "flex", gap: "0.35rem", marginBottom: "0.75rem" }}>
