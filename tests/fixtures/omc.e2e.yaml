@@ -1,29 +1,26 @@
-# Hermes OMC Workflow — Example Config (topic mode)
-# Copy fields into config/omc.yaml and set real channel IDs.
-
 omc:
   adapter: discord
   agents_dir: agents
 
 topics:
   product:
-    channel_id: "REPLACE_PRODUCT_CHANNEL_ID"
+    channel_id: "1001"
     agents: [pm, sa]
     ticket_create_roles: [pm, sa]
   engineering:
-    channel_id: "REPLACE_ENGINEERING_CHANNEL_ID"
+    channel_id: "1002"
     agents: [pm, sa, coder, qa, devops, hermes, claude, cursor, opencode, codex]
     ticket_create_roles: [pm, sa]
   marketing:
-    channel_id: "REPLACE_MARKETING_CHANNEL_ID"
+    channel_id: "1003"
     agents: [pm, marketing]
     ticket_create_roles: [pm]
   support:
-    channel_id: "REPLACE_SUPPORT_CHANNEL_ID"
+    channel_id: "1004"
     agents: [pm, sa, coder, qa, hermes, claude, cursor, opencode, codex]
     ticket_create_roles: [pm, sa]
   standup:
-    channel_id: "REPLACE_STANDUP_CHANNEL_ID"
+    channel_id: "1005"
     agents: [standup]
     ticket_create_roles: []
 
@@ -35,14 +32,33 @@ agent_routes:
   devops: [pm, coder, qa]
   marketing: [pm]
   standup: []
+  hermes: [sa, qa, devops]
+  claude: [sa, qa, devops]
+  cursor: [sa, qa, devops]
+  opencode: [sa, qa, devops]
   codex: [sa, qa, devops]
+
+status_authority:
+  pm: [backlog, todo, done, cancelled]
+  sa: [todo, in progress]
+  coder: [in progress, in review]
+  qa: [qa review, qa failed, qa verified, ready to deploy]
+  devops: [ready to deploy, deployed]
+  marketing: []
+  standup: []
+  hermes: [in progress, in review]
+  claude: [in progress, in review]
+  cursor: [in progress, in review]
+  opencode: [in progress, in review]
+  codex: [in progress, in review]
 
 coding:
   default: hermes
-  workspace: "${OMC_WORKSPACE}"
+  workspace: "."
   backends:
     hermes:
       command: ["hermes", "-z"]
+      session_prefix: omc-coder
     claude:
       command: ["claude", "-p", "--output-format", "text"]
     cursor:
@@ -52,12 +68,12 @@ coding:
     codex:
       command: ["codex", "exec"]
   aliases:
-    coder: null
     hermes: hermes
     claude: claude
     cursor: cursor
     opencode: opencode
     codex: codex
+    coder: null
 
 memory:
   provider: obsidian
@@ -67,4 +83,4 @@ memory:
 
 tickets:
   provider: none
-  store_path: "~/.hermes/omc/task_map.json"
+  store_path: "${OMC_E2E_TASK_MAP}"

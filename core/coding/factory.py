@@ -9,14 +9,16 @@ from typing import Any, Optional
 
 from core.coding.base import CodingBackend
 from core.coding.claude import ClaudeBackend
+from core.coding.codex import CodexBackend
 from core.coding.cursor import CursorBackend
 from core.coding.hermes import HermesBackend
 from core.coding.opencode import OpenCodeBackend
 
 logger = logging.getLogger(__name__)
 
-# Mentions that should use a coding backend (vs Hermes persona chat)
-CODING_MENTIONS = frozenset({"coder", "hermes", "claude", "cursor", "opencode"})
+CODING_MENTIONS = frozenset(
+    {"coder", "hermes", "claude", "cursor", "opencode", "codex"}
+)
 
 
 def _build_backend(key: str, cfg: dict[str, Any]) -> CodingBackend:
@@ -35,11 +37,13 @@ def _build_backend(key: str, cfg: dict[str, Any]) -> CodingBackend:
         return CursorBackend(command=command)
     if key == "opencode":
         return OpenCodeBackend(command=command)
+    if key == "codex":
+        return CodexBackend(command=command)
     raise ValueError(f"Unknown coding backend: {key}")
 
 
 class CodingRegistry:
-    """Resolve @Coder / @Claude / … to a CodingBackend instance."""
+    """Resolve @Coder / @Claude / @Codex / … to a CodingBackend instance."""
 
     def __init__(self, coding_cfg: dict[str, Any] | None = None):
         self.cfg = coding_cfg or {}
@@ -50,6 +54,7 @@ class CodingRegistry:
             "claude": "claude",
             "cursor": "cursor",
             "opencode": "opencode",
+            "codex": "codex",
             "coder": None,
         }
         self.aliases: dict[str, Optional[str]] = {
@@ -64,8 +69,7 @@ class CodingRegistry:
     def resolve_backend_key(self, mention: str) -> str:
         m = mention.lower().lstrip("@")
         if m not in self.aliases and m != "coder":
-            # Direct backend name
-            if m in ("hermes", "claude", "cursor", "opencode"):
+            if m in ("hermes", "claude", "cursor", "opencode", "codex"):
                 return m
             return self.default_key
         mapped = self.aliases.get(m, None)

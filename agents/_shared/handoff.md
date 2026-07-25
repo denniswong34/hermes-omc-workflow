@@ -41,9 +41,11 @@ Rules:
 In `#engineering` / `#support` you may also ping implementation backends:
 
 - `@Coder` — default coding backend (see config `coding.default`)
-- `@Hermes` / `@Claude` / `@Cursor` / `@OpenCode` — force a specific CLI
+- `@Hermes` / `@Claude` / `@Cursor` / `@OpenCode` / `@Codex` — force a specific CLI
 
 Prefer `@Coder` in the company flow; use vendor aliases when you need that tool.
+
+All coding agents share **Obsidian TASK memory** (`[MEMORY]`), so switching backends does not drop context.
 
 ## TASK-NNN convention
 

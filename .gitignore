@@ -7,3 +7,9 @@ dist/
 build/
 .venv/
 venv/
+node_modules/
+.next/
+apps/agentic-os/.next/
+apps/agentic-os/node_modules/
+test-results/
+.pytest_cache/

@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from core.agent_router import AgentRouter
 from core.coding import create_coding_registry
 from core.config import load_config
+from core.memory import create_memory_store
 from core.sdlc_tracker import SDLCTracker
 from core.task_manager import TaskManager
 from core.tickets import create_tracker
@@ -107,6 +108,7 @@ async def main():
         status_authority=cfg.get("status_authority") or {},
     )
     coding = create_coding_registry(cfg.get("coding"))
+    memory = create_memory_store(cfg.get("memory"))
 
     router = AgentRouter(
         adapter=adapter,
@@ -120,6 +122,7 @@ async def main():
         task_mgr=task_mgr,
         ticket_tracker=ticket_tracker,
         ticket_provider=provider,
+        memory=memory,
     )
 
     async def _on_msg(msg):
@@ -133,6 +136,10 @@ async def main():
 
     logging.info(f"Ticket provider: {provider}")
     logging.info(f"Coding default: {coding.default_key} workspace={coding.workspace or '(none)'}")
+    if memory:
+        logging.info(f"Memory: obsidian → {memory.root}")
+    else:
+        logging.info("Memory: disabled")
     logging.info(f"Topics ({len(cfg['topics'])}):")
     for key, t in cfg["topics"].items():
         agents = ", ".join(t["agents"])

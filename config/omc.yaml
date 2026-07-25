@@ -16,7 +16,7 @@ topics:
     ticket_create_roles: [pm, sa]
   engineering:
     channel_id: "REPLACE_ENGINEERING_CHANNEL_ID"
-    agents: [pm, sa, coder, qa, devops, hermes, claude, cursor, opencode]
+    agents: [pm, sa, coder, qa, devops, hermes, claude, cursor, opencode, codex]
     ticket_create_roles: [pm, sa]
   marketing:
     channel_id: "REPLACE_MARKETING_CHANNEL_ID"
@@ -24,7 +24,7 @@ topics:
     ticket_create_roles: [pm]
   support:
     channel_id: "REPLACE_SUPPORT_CHANNEL_ID"
-    agents: [pm, sa, coder, qa, hermes, claude, cursor, opencode]
+    agents: [pm, sa, coder, qa, hermes, claude, cursor, opencode, codex]
     ticket_create_roles: [pm, sa]
   standup:
     channel_id: "REPLACE_STANDUP_CHANNEL_ID"
@@ -44,6 +44,7 @@ agent_routes:
   claude: [sa, qa, devops]
   cursor: [sa, qa, devops]
   opencode: [sa, qa, devops]
+  codex: [sa, qa, devops]
 
 # Roles allowed to move the ticket board
 status_authority:
@@ -58,6 +59,7 @@ status_authority:
   claude: [in progress, in review]
   cursor: [in progress, in review]
   opencode: [in progress, in review]
+  codex: [in progress, in review]
 
 # Pluggable coding backends (@Coder uses default; aliases map to a backend)
 coding:
@@ -73,12 +75,22 @@ coding:
       command: ["agent"]
     opencode:
       command: ["opencode", "run"]
+    codex:
+      command: ["codex", "exec"]
   aliases:
     hermes: hermes
     claude: claude
     cursor: cursor
     opencode: opencode
+    codex: codex
     coder: null   # null → use coding.default
+
+# Shared cross-agent memory (Obsidian vault)
+memory:
+  provider: obsidian   # none | obsidian
+  obsidian:
+    vault_path: "${OMC_OBSIDIAN_VAULT}"
+    root_folder: OMC
 
 tickets:
   provider: none  # plane | jira | none

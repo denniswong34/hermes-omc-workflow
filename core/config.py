@@ -27,6 +27,7 @@ DEFAULT_AGENT_ROUTES = {
     "claude": ["sa", "qa", "devops"],
     "cursor": ["sa", "qa", "devops"],
     "opencode": ["sa", "qa", "devops"],
+    "codex": ["sa", "qa", "devops"],
 }
 
 DEFAULT_STATUS_AUTHORITY = {
@@ -41,6 +42,7 @@ DEFAULT_STATUS_AUTHORITY = {
     "claude": ["in progress", "in review"],
     "cursor": ["in progress", "in review"],
     "opencode": ["in progress", "in review"],
+    "codex": ["in progress", "in review"],
 }
 
 # Persona markdown files (coding aliases reuse coder.md when needed)
@@ -56,9 +58,10 @@ ROLE_FILES = {
     "claude": "coder.md",
     "cursor": "coder.md",
     "opencode": "coder.md",
+    "codex": "coder.md",
 }
 
-CODING_ALIASES = {"coder", "hermes", "claude", "cursor", "opencode"}
+CODING_ALIASES = {"coder", "hermes", "claude", "cursor", "opencode", "codex"}
 
 _ENV_PATTERN = re.compile(r"\$\{([^}]+)\}")
 
@@ -199,6 +202,17 @@ def load_config(path: str | None = None) -> dict:
     if not coding.get("workspace"):
         coding = {**coding, "workspace": os.environ.get("OMC_WORKSPACE", "")}
 
+    memory = raw.get("memory") or {"provider": "none"}
+    # Expand vault from env if still empty after ${} expansion
+    obs = (memory.get("obsidian") or {}) if isinstance(memory, dict) else {}
+    if isinstance(obs, dict) and not (obs.get("vault_path") or "").strip():
+        env_vault = os.environ.get("OMC_OBSIDIAN_VAULT", "")
+        if env_vault:
+            memory = {
+                **memory,
+                "obsidian": {**obs, "vault_path": env_vault},
+            }
+
     adapter = get_adapter_type(raw)
 
     return {
@@ -211,6 +225,7 @@ def load_config(path: str | None = None) -> dict:
         "channel_by_name": channel_by_name,
         "free_channels": set(channel_names.keys()),
         "coding": coding,
+        "memory": memory,
         "coding_aliases": set(CODING_ALIASES),
         "adapter": adapter,
         "tickets": raw.get("tickets", {"provider": "none"}),

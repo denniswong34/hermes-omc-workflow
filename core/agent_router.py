@@ -14,9 +14,11 @@ from uuid import uuid4
 
 from adapters.base import ChannelAdapter, Message
 from core.coding import CodingRegistry
+from core.memory.obsidian import ObsidianMemoryStore
 from core.sdlc_tracker import SDLCTracker
 from core.task_manager import TaskManager
 from core.tickets.base import TicketTracker
+from core.tickets.status import detect_status
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +45,7 @@ class AgentRouter:
         task_mgr: Optional[TaskManager] = None,
         ticket_tracker: Optional[TicketTracker] = None,
         ticket_provider: str = "none",
+        memory: Optional[ObsidianMemoryStore] = None,
         forward_max_depth: int = 5,
     ):
         self.adapter = adapter
@@ -56,6 +59,7 @@ class AgentRouter:
         self.task_mgr = task_mgr
         self.ticket_tracker = ticket_tracker
         self.ticket_provider = ticket_provider
+        self.memory = memory
         self.forward_max_depth = forward_max_depth
 
         self._processed_ids: set[str] = set()
@@ -153,6 +157,24 @@ class AgentRouter:
                 f"Include the TASK id in handoffs and status updates.\n"
             )
 
+        # Shared Obsidian memory (cross-backend)
+        if self.memory and task_id:
+            try:
+                if not self.memory.get_task(task_id):
+                    self.memory.upsert_task(
+                        task_id,
+                        title=content.split("\n")[0][:80],
+                        topic=topic_key,
+                        assignee=role,
+                        ticket_url=ticket_url or "",
+                        goal=content[:500],
+                    )
+                mem = self.memory.build_context_prompt(task_id)
+                if mem:
+                    full_prompt += f"\n\n[MEMORY]\n{mem}\n"
+            except Exception as e:
+                logger.warning(f"Memory inject failed: {e}")
+
         try:
             response = await self._invoke_role(
                 role=role,
@@ -187,6 +209,7 @@ class AgentRouter:
                 ticket_url = ticket_url or info.get("url", "")
                 task_id = task_id or ref
 
+        status = None
         if self.sdlc and external_id:
             status = self.sdlc.detect_status(display)
             if status and self.sdlc.allowed_for_role(role, status):
@@ -195,6 +218,37 @@ class AgentRouter:
                 logger.info(
                     f"SDLC: ignored '{status.display}' from @{role} (not in authority)"
                 )
+                status = None
+
+        # Persist shared memory after the turn
+        if self.memory and task_id:
+            try:
+                backend_key = (
+                    self.coding.resolve_backend_key(role)
+                    if self.coding.is_coding_mention(role)
+                    else ""
+                )
+                st = status.display if status else ""
+                if not st:
+                    detected = detect_status(display)
+                    st = detected.display if detected else ""
+                self.memory.upsert_task(
+                    task_id,
+                    status=st,
+                    topic=topic_key,
+                    assignee=role,
+                    backend=backend_key,
+                    ticket_url=ticket_url or "",
+                )
+                self.memory.append_agent_note(
+                    task_id, role, backend_key, display[:1200]
+                )
+                for target_role, handoff_msg in handoffs:
+                    self.memory.append_handoff(
+                        task_id, role, target_role, handoff_msg
+                    )
+            except Exception as e:
+                logger.warning(f"Memory persist failed: {e}")
 
         if task_id and task_id not in display:
             display = f"**{task_id}**\n{display}"
