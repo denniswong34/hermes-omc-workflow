@@ -32,12 +32,66 @@ RUN_TAG = os.environ.get("SDLC_RUN_TAG") or time.strftime("SDLC-E2E-%Y%m%d-%H%M"
 CORE_ROLES = ("PM", "SA", "Coder", "QA", "DevOps")
 
 
-def _token() -> str:
+def _agent_discord_token() -> str:
+    """Prefer a per-agent Discord bot token (Message Content Intent) for history reads."""
     load_workflow_secrets_into_environ(WF_ID)
+    try:
+        from core.db import get_db
+        from core.secrets import (
+            agent_has_gateway_credentials,
+            resolve_agent_gateway_credentials,
+        )
+        from core.workflow.repository import WorkflowRepository
+
+        wf = WorkflowRepository(get_db()).get_workflow(WF_ID)
+        if wf:
+            preferred = ("pm", "sa", "coder", "devops", "marketing", "qa")
+            by_role = {a.role_id.lower(): a for a in wf.agents}
+            for role in preferred:
+                ag = by_role.get(role)
+                if not ag:
+                    continue
+                if not agent_has_gateway_credentials(
+                    wf.id, ag.id, "discord", ag.platform_identity
+                ):
+                    continue
+                creds = resolve_agent_gateway_credentials(
+                    wf.id, ag.id, "discord", ag.platform_identity
+                )
+                t = (creds.get("DISCORD_BOT_TOKEN") or "").strip()
+                if t:
+                    return t
+    except Exception:
+        pass
+    return ""
+
+
+def _post_token() -> str:
+    """Post as a non-agent bot when possible so agent gateways still receive the message."""
+    load_workflow_secrets_into_environ(WF_ID)
+    t = (os.environ.get("DISCORD_BOT_TOKEN") or "").strip()
+    if t:
+        return t
+    t = _agent_discord_token()
+    if not t:
+        raise SystemExit("DISCORD_BOT_TOKEN missing")
+    return t
+
+
+def _read_token() -> str:
+    """Read history with an agent token that has Message Content Intent."""
+    t = _agent_discord_token()
+    if t:
+        return t
     t = (os.environ.get("DISCORD_BOT_TOKEN") or "").strip()
     if not t:
         raise SystemExit("DISCORD_BOT_TOKEN missing")
     return t
+
+
+def _token() -> str:
+    """Backward-compatible alias — prefer read token for identity checks."""
+    return _read_token()
 
 
 def _jira_creds() -> tuple[str, str, str]:
@@ -191,8 +245,11 @@ def extract_task_id(text: str) -> str:
 
 
 def extract_jira_key(text: str) -> str:
-    m = re.search(r"\b(HOAO-\d+)\b", text or "", re.I)
-    return m.group(1).upper() if m else ""
+    """Prefer the highest HOAO number (newest ticket) when multiple keys appear."""
+    keys = re.findall(r"\b(HOAO-\d+)\b", text or "", re.I)
+    if not keys:
+        return ""
+    return max((k.upper() for k in keys), key=lambda k: int(k.split("-", 1)[1]))
 
 
 def adf_to_text(node) -> str:
@@ -314,13 +371,36 @@ def _content_ok_for_role(role: str, content: str) -> bool:
             k in c for k in ("test case", "acceptance", "tc-1", "tc1", "1.", "1)")
         )
         return has_spec and has_tests and len(content) > 200
+    if role.upper() == "CODER":
+        thin = any(
+            k in c
+            for k in (
+                "waiting on",
+                "waiting for",
+                "nothing in progress",
+                "before starting",
+            )
+        )
+        has_impl = any(
+            k in c
+            for k in (
+                "def ",
+                "magic_link",
+                "stub",
+                "implement",
+                "```",
+                "in review",
+            )
+        )
+        return (not thin) and has_impl and len(content) > 80
     if role.upper() == "QA":
         return any(k in c for k in ("pass", "fail", "qa verified", "qa failed", "test result"))
     return True
 
 
 def wait_or_nudge(
-    token: str,
+    read_token: str,
+    post_token: str,
     channel_id: str,
     after_id: str,
     role: str,
@@ -335,7 +415,7 @@ def wait_or_nudge(
     """
     print(f"… watching for @{role} handoff (up to {int(handoff_wait)}s)")
     ok, detail, mid = wait_for_role(
-        token, channel_id, after_id, role, timeout_sec=handoff_wait
+        read_token, channel_id, after_id, role, timeout_sec=handoff_wait
     )
     if ok and _content_ok_for_role(role, detail):
         print(f"handoff @{role} OK (no nudge)")
@@ -347,11 +427,11 @@ def wait_or_nudge(
     else:
         print(f"no @{role} handoff — posting explicit prompt")
 
-    nudge_id = post(token, channel_id, prompt)
+    nudge_id = post(post_token, channel_id, prompt)
     print(f"posted nudge {nudge_id}")
     time.sleep(2)
     ok2, detail2, mid2 = wait_for_role(
-        token, channel_id, nudge_id, role, timeout_sec=timeout_sec
+        read_token, channel_id, nudge_id, role, timeout_sec=timeout_sec
     )
     return ok2, detail2, mid2 if ok2 else nudge_id
 
@@ -447,9 +527,12 @@ def main() -> int:
     except Exception:
         pass
 
-    token = _token()
-    status, me = _api("GET", "/users/@me", token)
-    print(f"Bot: {me.get('username')} ({me.get('id')}) http={status}")
+    post_token = _post_token()
+    read_token = _read_token()
+    status, me = _api("GET", "/users/@me", post_token)
+    print(f"Post bot: {me.get('username')} ({me.get('id')}) http={status}")
+    status_r, me_r = _api("GET", "/users/@me", read_token)
+    print(f"Read bot: {me_r.get('username')} ({me_r.get('id')}) http={status_r}")
     print(f"WF_ID: {WF_ID}")
     print(f"RUN_TAG: {RUN_TAG}")
     print("Tracking: Jira HOAO (live)")
@@ -486,7 +569,8 @@ def main() -> int:
         try:
             if topic == "engineering" and role in eng_follow and last_eng_msg:
                 ok, detail, mid = wait_or_nudge(
-                    token,
+                    read_token,
+                    post_token,
                     ch,
                     last_eng_msg,
                     role,
@@ -495,12 +579,12 @@ def main() -> int:
                     timeout_sec=420,
                 )
             else:
-                mid = post(token, ch, prompt)
+                mid = post(post_token, ch, prompt)
                 print(f"posted {mid}")
                 time.sleep(2)
                 timeout = 420 if role in {"SA", "Coder", "QA"} else 240
                 ok, detail, mid = wait_for_role(
-                    token, ch, mid, role, timeout_sec=timeout
+                    read_token, ch, mid, role, timeout_sec=timeout
                 )
         except Exception as e:
             results.append((topic, role, False, str(e)))
@@ -514,18 +598,17 @@ def main() -> int:
         if topic == "engineering" and mid:
             last_eng_msg = mid
 
-        if ok:
+        if ok and topic == "engineering":
             tid = extract_task_id(detail)
             jkey = extract_jira_key(detail)
             if tid and not task_id:
                 task_id = tid
                 print(f"captured TASK {task_id}")
-            if jkey and not jira_key:
+            if jkey and (
+                not jira_key
+                or int(jkey.split("-", 1)[1]) > int(jira_key.split("-", 1)[1])
+            ):
                 jira_key = jkey
-                print(f"captured Jira {jira_key}")
-            m = re.search(r"HOAO-\d+", detail, re.I)
-            if m and not jira_key:
-                jira_key = m.group(0).upper()
                 print(f"captured Jira {jira_key}")
 
         time.sleep(3)

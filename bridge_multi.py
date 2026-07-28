@@ -17,7 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from adapters.hub import build_default_hub
+from adapters.hub import build_multi_bot_hub
 from core.cron import get_cron_scheduler
 from core.db import get_db
 from core.db.seed import seed_database
@@ -48,41 +48,54 @@ async def main():
     pool = reload_pool()
 
     # Load secrets for all active workflows into process env (Discord/Jira/…)
-    for wf in repo.list_active():
+    active = repo.list_active()
+    for wf in active:
         load_workflow_secrets_into_environ(wf.id)
 
     # Build channel maps per platform from active workflows
     maps: dict[str, dict[str, str]] = {}
-    for wf in repo.list_active():
+    for wf in active:
         for ch in wf.channels:
             ext = (ch.external_id or "").strip()
             if not ext or ext.startswith("REPLACE_"):
                 continue
             maps.setdefault(ch.platform, {})[ch.name] = ext
 
-    hub = build_default_hub(maps)
+    hub = build_multi_bot_hub(active, maps)
     hub.set_ownership(repo.channel_ownership_map())
 
-    # One AgentRouter per workflow, keyed by workflow_id
-    routers: dict[str, object] = {}
+    # One AgentRouter per (workflow_id, platform)
+    routers: dict[tuple[str, str], object] = {}
 
     def _router_for(workflow_id: str, platform: str):
-        if workflow_id in routers:
-            return routers[workflow_id]
+        key = (workflow_id, platform)
+        if key in routers:
+            return routers[key]
         rt = pool.get(workflow_id)
         if not rt:
             return None
         adapter = hub.adapters.get(platform)
         if not adapter:
+            # Prefer any agent adapter for this platform
+            for ad_key, candidate in hub.adapters.items():
+                if ad_key == platform or ad_key.startswith(f"{platform}:"):
+                    adapter = candidate
+                    break
+        if not adapter:
             logging.error("No adapter for platform %s", platform)
             return None
-        router = build_agent_router(rt, adapter)
-        routers[workflow_id] = router
+        role_adapters = hub.adapters_by_role(platform)
+        router = build_agent_router(
+            rt, adapter, adapters_by_role=role_adapters
+        )
+        routers[key] = router
         logging.info(
-            "AgentRouter ready for workflow %s (%s) topics=%s",
+            "AgentRouter ready for workflow %s (%s) platform=%s topics=%s roles=%s",
             workflow_id,
             rt.workflow.name,
+            platform,
             list(router.topics.keys()),
+            list(role_adapters.keys()) or ["(legacy)"],
         )
         return router
 
@@ -92,11 +105,14 @@ async def main():
             logging.warning("No runtime for workflow %s", workflow_id)
             return
         logging.info(
-            "Routed %s:%s → workflow %s (%s) content=%s",
+            "Routed %s:%s → workflow %s (%s) agent=%s role=%s dm=%s content=%s",
             platform,
             msg.channel_id,
             workflow_id,
             rt.workflow.name,
+            getattr(msg, "agent_id", "") or "-",
+            getattr(msg, "target_role", "") or "-",
+            getattr(msg, "is_dm", False),
             (msg.content or "")[:120],
         )
 

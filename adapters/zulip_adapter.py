@@ -119,13 +119,25 @@ class ZulipAdapter(ChannelAdapter):
 
     def __init__(
         self,
-        stream_map: dict[str, str],
+        stream_map: dict[str, str] | None = None,
         topic_prefix: str = "omc-",
         allowed_users: list[str] | None = None,
+        *,
+        site: str = "",
+        email: str = "",
+        api_key: str = "",
+        agent_id: str = "",
+        role_id: str = "",
     ):
-        self.stream_map = stream_map
+        self.stream_map = stream_map or {}
         self.topic_prefix = topic_prefix
         self.allowed_users = allowed_users or []
+        self._site = (site or "").strip()
+        self._email = (email or "").strip()
+        self._api_key = (api_key or "").strip()
+        self.agent_id = agent_id or ""
+        self.role_id = (role_id or "").lower()
+        self.bot_user_id = ""
         self._msg_handler: Optional[MessageHandler] = None
         self._client: Any = None
         self._running = False
@@ -160,14 +172,22 @@ class ZulipAdapter(ChannelAdapter):
         """Connect to Zulip and start the event queue loop."""
         import zulip
 
-        site = os.getenv("ZULIP_SITE_URL", "")
-        email = os.getenv("ZULIP_BOT_EMAIL", "")
-        api_key = os.getenv("ZULIP_API_KEY", "")
+        site = (
+            self._site
+            or os.getenv("ZULIP_SITE_URL", "")
+            or os.getenv("ZULIP_SITE", "")
+        )
+        email = (
+            self._email
+            or os.getenv("ZULIP_BOT_EMAIL", "")
+            or os.getenv("ZULIP_EMAIL", "")
+        )
+        api_key = self._api_key or os.getenv("ZULIP_API_KEY", "")
 
         if not all([site, email, api_key]):
             raise ValueError(
-                "ZulipAdapter requires ZULIP_SITE_URL, ZULIP_BOT_EMAIL, "
-                "and ZULIP_API_KEY environment variables"
+                "ZulipAdapter requires site URL, bot email, and API key "
+                "(ctor args or ZULIP_SITE / ZULIP_EMAIL / ZULIP_API_KEY)"
             )
 
         client_kwargs = {
@@ -194,9 +214,14 @@ class ZulipAdapter(ChannelAdapter):
 
         self._bot_email = profile.get("email", email)
         self._bot_id = profile.get("user_id", 0)
+        self.bot_user_id = str(self._bot_id or self._bot_email or "")
         logger.info(
-            "✓ Zulip connected as %s (user_id=%s) on %s",
-            self._bot_email, self._bot_id, site,
+            "✓ Zulip connected as %s (user_id=%s) on %s agent=%s role=%s",
+            self._bot_email,
+            self._bot_id,
+            site,
+            self.agent_id or "-",
+            self.role_id or "-",
         )
 
         # Resolve stream IDs from names
@@ -440,6 +465,12 @@ class ZulipAdapter(ChannelAdapter):
                 content=content,
                 is_bot=False,
                 channel_name=agent_channel,
+                platform="zulip",
+                bot_user_id=self.bot_user_id,
+                agent_id=self.agent_id,
+                target_role=self.role_id,
+                is_dm=False,
+                bot_mentioned=True,
             )
         else:
             # DM
@@ -451,7 +482,13 @@ class ZulipAdapter(ChannelAdapter):
                 author_name=sender_email,
                 content=content,
                 is_bot=False,
-                channel_name=chat_id,  # DM goes directly to first available agent
+                channel_name=chat_id,
+                platform="zulip",
+                bot_user_id=self.bot_user_id,
+                agent_id=self.agent_id,
+                target_role=self.role_id,
+                is_dm=True,
+                bot_mentioned=True,
             )
 
         if self._msg_handler:

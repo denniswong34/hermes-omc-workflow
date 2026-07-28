@@ -27,6 +27,8 @@ class ReasoningEngine(ABC):
         *,
         workspace: str = "",
         session_key: str = "",
+        profile: str = "",
+        model: str = "",
         mcp_configs: Optional[list[dict[str, Any]]] = None,
     ) -> str:
         ...
@@ -51,6 +53,8 @@ class CodingEngineAdapter(ReasoningEngine):
         *,
         workspace: str = "",
         session_key: str = "",
+        profile: str = "",
+        model: str = "",
         mcp_configs: Optional[list[dict[str, Any]]] = None,
     ) -> str:
         # MCP: prefer tool-proxy injection into prompt when configs present
@@ -60,7 +64,11 @@ class CodingEngineAdapter(ReasoningEngine):
 
             final_prompt = inject_mcp_tool_hints(prompt, mcp_configs)
         return await self.backend.run(
-            final_prompt, workspace=workspace, session_key=session_key
+            final_prompt,
+            workspace=workspace,
+            session_key=session_key,
+            profile=profile,
+            model=model,
         )
 
 

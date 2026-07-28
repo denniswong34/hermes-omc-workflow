@@ -193,6 +193,42 @@ pre {
   color: var(--text);
 }
 
+.project-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.9rem;
+}
+
+.project-switcher select {
+  width: auto;
+  min-width: 9rem;
+  max-width: 14rem;
+  padding: 0.35rem 0.5rem;
+}
+
+.project-switcher-btn {
+  font-size: 0.85rem;
+  padding: 0.35rem 0.65rem;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-bottom: 0.85rem;
+}
+
+.btn-secondary {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+
+.btn-danger {
+  background: #a33;
+}
+
 .nav-toggle {
   display: none;
   margin-left: auto;
@@ -426,6 +462,13 @@ pre {
   margin-bottom: 0.75rem;
 }
 
+.panel-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
 .badge {
   display: inline-block;
   padding: 0.15rem 0.5rem;
@@ -498,8 +541,13 @@ pre {
     align-items: stretch;
   }
 
-  .panel-toolbar > button {
+  .panel-toolbar > button,
+  .panel-toolbar-actions {
     width: 100%;
+  }
+
+  .panel-toolbar-actions > button {
+    flex: 1;
   }
 
   .modal-footer {

@@ -110,6 +110,39 @@ def load_agent_prompt(agents_dir: Path, role: str) -> str:
     return "\n\n---\n\n".join(parts)
 
 
+def load_workflow_agent_prompt(
+    agents_dir: Path,
+    role: str,
+    persona_file: str = "",
+) -> str:
+    """Load the portal system prompt for a workflow agent.
+
+    Prefers ``ROLE_FILES`` + shared SDLC/handoff (same as runtime). Falls back
+    to ``persona_file`` (or ``{role}.md``) so custom portal personas still sync.
+    """
+    role_key = (role or "").strip().lower()
+    try:
+        return load_agent_prompt(agents_dir, role_key)
+    except Exception:
+        parts: list[str] = []
+        shared = agents_dir / "_shared"
+        for name in ("sdlc.md", "handoff.md"):
+            path = shared / name
+            if path.exists():
+                parts.append(_read_markdown(path))
+        filename = (
+            (persona_file or "").strip()
+            or ROLE_FILES.get(role_key, f"{role_key}.md")
+        )
+        path = agents_dir / filename
+        if path.exists():
+            parts.append(_read_markdown(path))
+        if not parts:
+            mention = role_key or "agent"
+            return f"You are @{mention}."
+        return "\n\n---\n\n".join(parts)
+
+
 def _normalize_role(name: str) -> str:
     return name.strip().lstrip("#@").lower()
 

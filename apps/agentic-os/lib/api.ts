@@ -1,5 +1,36 @@
 const base = () => process.env.NEXT_PUBLIC_API_BASE || "http://127.0.0.1:8787";
 
+const PROJECT_HEADER = "X-OMC-Project-Id";
+
+let activeProjectId: string | null = null;
+
+export function setApiProjectId(projectId: string | null) {
+  activeProjectId = projectId;
+}
+
+export function getApiProjectId(): string | null {
+  return activeProjectId;
+}
+
+function projectHeaders(extra?: HeadersInit): HeadersInit {
+  const headers: Record<string, string> = {};
+  if (extra) {
+    if (extra instanceof Headers) {
+      extra.forEach((v, k) => {
+        headers[k] = v;
+      });
+    } else if (Array.isArray(extra)) {
+      for (const [k, v] of extra) headers[k] = v;
+    } else {
+      Object.assign(headers, extra);
+    }
+  }
+  if (activeProjectId) {
+    headers[PROJECT_HEADER] = activeProjectId;
+  }
+  return headers;
+}
+
 async function parse<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const text = await res.text();
@@ -21,15 +52,19 @@ async function parse<T>(res: Response): Promise<T> {
   }
   return res.json() as Promise<T>;
 }
+
 export async function apiGet<T = unknown>(path: string): Promise<T> {
-  const res = await fetch(`${base()}${path}`, { cache: "no-store" });
+  const res = await fetch(`${base()}${path}`, {
+    cache: "no-store",
+    headers: projectHeaders(),
+  });
   return parse<T>(res);
 }
 
 export async function apiPut<T = unknown>(path: string, body: unknown): Promise<T> {
   const res = await fetch(`${base()}${path}`, {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    headers: projectHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(body),
   });
   return parse<T>(res);
@@ -38,7 +73,9 @@ export async function apiPut<T = unknown>(path: string, body: unknown): Promise<
 export async function apiPost<T = unknown>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${base()}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: projectHeaders(
+      body === undefined ? undefined : { "Content-Type": "application/json" }
+    ),
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   return parse<T>(res);
@@ -47,14 +84,16 @@ export async function apiPost<T = unknown>(path: string, body?: unknown): Promis
 export async function apiPatch<T = unknown>(path: string, body: unknown): Promise<T> {
   const res = await fetch(`${base()}${path}`, {
     method: "PATCH",
-    headers: { "Content-Type": "application/json" },
+    headers: projectHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(body),
   });
   return parse<T>(res);
 }
 
 export async function apiDelete<T = unknown>(path: string): Promise<T> {
-  const res = await fetch(`${base()}${path}`, { method: "DELETE" });
+  const res = await fetch(`${base()}${path}`, {
+    method: "DELETE",
+    headers: projectHeaders(),
+  });
   return parse<T>(res);
 }
-

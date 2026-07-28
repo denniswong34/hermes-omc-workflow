@@ -22,6 +22,16 @@ def main() -> None:
     r = c.get("/api/templates")
     assert any(t["id"] == "tpl-sdlc" for t in r.json()["templates"])
 
+    r = c.post(
+        "/api/projects",
+        json={
+            "name": "Smoke Project",
+            "working_directory": "/tmp/smoke",
+            "github_repo": "acme/smoke",
+        },
+    )
+    assert r.status_code == 200, r.text
+
     r = c.post("/api/workflows/clone", json={"name": "Play Co", "template_id": "tpl-sdlc"})
     assert r.status_code == 200
     wid = r.json()["id"]
@@ -87,29 +97,68 @@ def main() -> None:
     assert r.json()["tracking_provider"] == "jira"
     assert r.json()["tracking"]["configured"] is True
     assert r.json()["tracking"]["label"] == "Jira #1"
+    assert len(r.json()["trackings"]) == 1
+    assert r.json()["trackings"][0]["is_active"] is True
     r = c.delete(f"/api/workflows/{wid}/tracking")
     assert r.status_code == 200
     assert r.json()["tracking_provider"] == "none"
     assert r.json()["tracking"]["configured"] is False
+    assert r.json()["trackings"] == []
 
-    # Re-add tracking then probe (missing/invalid → ok=false, not 404)
-    r = c.put(
-        f"/api/workflows/{wid}/tracking",
+    # Multi-tracking: two connections, only one active
+    r = c.post(
+        f"/api/workflows/{wid}/trackings",
         json={
             "provider": "jira",
-            "label": "Jira #1",
+            "label": "Jira HOAO",
             "config": {
                 "base_url": "https://example.atlassian.net",
                 "email": "bot@example.com",
-                "project_key": "OMC",
+                "project_key": "HOAO",
             },
-            "secrets": {"api_token": "test-token"},
+            "secrets": {"api_token": "jira-token"},
+            "activate": True,
         },
     )
-    assert r.status_code == 200
+    assert r.status_code == 200, r.text
+    jira_id = r.json()["trackings"][0]["id"]
+    assert r.json()["tracking"]["is_active"] is True
     r = c.post(
-        f"/api/workflows/{wid}/tracking/test",
-        json={"provider": "jira", "config": {}, "secrets": {}},
+        f"/api/workflows/{wid}/trackings",
+        json={
+            "provider": "plane",
+            "label": "Plane Acme",
+            "config": {
+                "base_url": "https://api.plane.so",
+                "workspace_slug": "acme",
+                "project_id": "proj-1",
+            },
+            "secrets": {"api_key": "plane-key"},
+            "activate": False,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert len(body["trackings"]) == 2
+    assert body["tracking_provider"] == "jira"
+    assert body["tracking"]["label"] == "Jira HOAO"
+    plane = next(t for t in body["trackings"] if t["provider"] == "plane")
+    assert plane["is_active"] is False
+    r = c.post(f"/api/workflows/{wid}/trackings/{plane['id']}/activate")
+    assert r.status_code == 200
+    assert r.json()["tracking_provider"] == "plane"
+    assert r.json()["tracking"]["label"] == "Plane Acme"
+    assert sum(1 for t in r.json()["trackings"] if t["is_active"]) == 1
+    r = c.delete(f"/api/workflows/{wid}/trackings/{jira_id}")
+    assert r.status_code == 200
+    assert len(r.json()["trackings"]) == 1
+    assert r.json()["trackings"][0]["is_active"] is True
+
+    # Probe (missing/invalid → ok=false, not 404)
+    plane_id = r.json()["trackings"][0]["id"]
+    r = c.post(
+        f"/api/workflows/{wid}/trackings/{plane_id}/test",
+        json={"provider": "plane", "config": {}, "secrets": {}},
     )
     assert r.status_code == 200
     assert "ok" in r.json()

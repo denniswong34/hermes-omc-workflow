@@ -20,6 +20,8 @@ class CodingBackend(ABC):
         *,
         workspace: str = "",
         session_key: str = "",
+        profile: str = "",
+        model: str = "",
     ) -> str:
         """Execute the coding agent. Raises RuntimeError on hard failure."""
         ...

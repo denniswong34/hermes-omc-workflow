@@ -13,6 +13,11 @@ from apps.api.auth import (
     verify_access_token,
     verify_magic_link_token,
 )
+from apps.api.email import (
+    ConsoleEmailProvider,
+    get_email_provider,
+    send_magic_link_email,
+)
 
 router = APIRouter()
 
@@ -34,7 +39,7 @@ def login(body: LoginBody):
 
 
 # ---------------------------------------------------------------------------
-# Passwordless magic-link (TASK-012)
+# Passwordless magic-link (TASK-002)
 # ---------------------------------------------------------------------------
 
 
@@ -55,15 +60,35 @@ class RefreshBody(BaseModel):
 def request_magic_link(body: MagicLinkRequest):
     """POST /api/auth/magic-link
 
-    Sends a one-time 6-character magic-link token to the given email.
-    Since no real email backend is configured, the token is returned in the
-    response for development/testing purposes.
+    Generates a one-time 6-character token and delivers it via the
+    configured email provider.  When the provider is ConsoleEmailProvider
+    (i.e. MAILER_BACKEND=dev or unset with no SMTP_* vars) the token is
+    also returned in the response for local testing convenience.
     """
     token = generate_magic_link_token(body.email)
+
+    try:
+        send_magic_link_email(body.email, token, ttl_minutes=15)
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=str(exc),
+        )
+
+    # In dev mode the token is returned inline for testing; in production
+    # we reveal nothing about whether the account exists (non-enumerating).
+    provider = get_email_provider()
+    if isinstance(provider, ConsoleEmailProvider):
+        return {
+            "ok": True,
+            "message": f"Magic-link token sent to {body.email}",
+            "token": token,  # exposed for dev/testing only
+            "ttl_seconds": 900,
+        }
+
     return {
         "ok": True,
-        "message": f"Magic-link token sent to {body.email}",
-        "token": token,  # exposed for dev; remove in production
+        "message": "If the email exists, a token has been sent",
         "ttl_seconds": 900,
     }
 
@@ -121,7 +146,7 @@ def me(authorization: str | None = Header(None)):
     """GET /api/auth/me
 
     Returns the email from the access token if valid.
-    Pass the token as: Authorization: Bearer <access_token>
+    Pass the token as: Authorization: Bearer ***
     """
     if not authorization:
         raise HTTPException(status_code=401, detail="Missing Authorization header")

@@ -1,0 +1,15 @@
+INFO:     127.0.0.1:10361 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:10379 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:10380 - "POST /api/auth/magic-link HTTP/1.1" 200 OK
+INFO:     127.0.0.1:10381 - "POST /api/auth/magic-link/verify HTTP/1.1" 200 OK
+INFO:     127.0.0.1:10382 - "GET /api/auth/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:10383 - "POST /api/auth/magic-link/verify HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:10408 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:10409 - "POST /api/auth/magic-link HTTP/1.1" 200 OK
+INFO:     127.0.0.1:10410 - "POST /api/auth/magic-link/verify HTTP/1.1" 200 OK
+INFO:     127.0.0.1:10411 - "POST /api/auth/magic-link/verify HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:11859 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:2398 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:10539 - "GET /api/platforms/gateway-guides HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:10548 - "GET /api/platforms HTTP/1.1" 200 OK
+INFO:     127.0.0.1:10549 - "GET /api/workflows/wf_bd77e2aed1b8 HTTP/1.1" 200 OK

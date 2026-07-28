@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from core.cron import get_cron_scheduler
@@ -14,18 +14,29 @@ from core.engines import ENGINE_IDS, list_engines
 from core.mcp import McpCatalog
 from core.memory import build_memory_store
 from core.chat_test import test_chat_connection
+from core.project import ProjectRepository
 from core.tracking_test import test_tracking_connection
 from core.tickets.discover import discover_tracking_status_map
 from core.tickets.status_map import nonempty_status_map
+from core.gateway_guides import gateway_guides_payload
+from core.hermes_profiles import (
+    HermesProfileError,
+    build_hermes_setup_guide,
+    sync_workflow_hermes_profiles,
+)
 from core.secrets import (
+    AGENT_GATEWAY_FIELDS,
     PLATFORMS,
     TRACKING_CONNECTION_FIELDS,
     TRACKING_PROVIDERS,
+    enrich_agent_gateways,
     enrich_chat_connection,
     enrich_tracking_connection,
     get_workflow_secrets,
+    resolve_agent_gateway_credentials,
     resolve_chat_secrets,
     resolve_tracking_secrets,
+    save_agent_gateway,
     save_chat_connection,
     save_tracking_connection,
     secret_fields_for_platforms,
@@ -36,6 +47,8 @@ from core.workflow.repository import ChannelConflictError, WorkflowRepository
 
 router = APIRouter()
 
+PROJECT_HEADER = "X-OMC-Project-Id"
+
 
 def _repo() -> WorkflowRepository:
     db = get_db()
@@ -44,10 +57,23 @@ def _repo() -> WorkflowRepository:
     return repo
 
 
+def _projects() -> ProjectRepository:
+    return ProjectRepository(get_db())
+
+
+def _resolve_project_id(x_omc_project_id: str | None) -> str:
+    try:
+        return _projects().require_project_id((x_omc_project_id or "").strip() or None)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
 def _tracking_credentials(
     workflow_id: str,
     provider: str,
     tracking_config: dict | None,
+    *,
+    connection_id: str = "",
 ) -> dict[str, str]:
     existing = dict(tracking_config or {})
     nested = dict(existing.get(provider) or {})
@@ -61,7 +87,13 @@ def _tracking_credentials(
         **{k: str(v) for k, v in nested.items() if k != "status_map" and v is not None},
     }
     credentials.update(
-        {k: v for k, v in resolve_tracking_secrets(workflow_id, provider).items() if v}
+        {
+            k: v
+            for k, v in resolve_tracking_secrets(
+                workflow_id, provider, connection_id=connection_id
+            ).items()
+            if v
+        }
     )
     return credentials
 
@@ -114,6 +146,9 @@ class AgentPatch(BaseModel):
     persona_file: Optional[str] = None
     reasoning_engine: Optional[str] = None
     coding_backend: Optional[str] = None
+    hermes_profile: Optional[str] = None
+    llm_model: Optional[str] = None
+    platform_identity: Optional[dict[str, Any]] = None
     tools: Optional[list[str]] = None
     mcp_allowlist: Optional[list[str]] = None
 
@@ -126,9 +161,28 @@ class AgentCreate(BaseModel):
     persona_file: str = ""
     reasoning_engine: Optional[str] = None
     coding_backend: Optional[str] = None
+    hermes_profile: Optional[str] = None
+    llm_model: Optional[str] = None
+    platform_identity: Optional[dict[str, Any]] = None
     tools: list[str] = Field(default_factory=list)
     mcp_allowlist: list[str] = Field(default_factory=list)
     create_persona_file: bool = True
+
+
+class AgentGatewayPatch(BaseModel):
+    platform: str
+    enabled: Optional[bool] = None
+    config: dict[str, str] = Field(default_factory=dict)
+    secrets: dict[str, str] = Field(default_factory=dict)
+    bot_user_id: Optional[str] = None
+    bot_username: Optional[str] = None
+    bot_email: Optional[str] = None
+
+
+class AgentGatewayTestBody(BaseModel):
+    platform: Optional[str] = None
+    config: dict[str, str] = Field(default_factory=dict)
+    secrets: dict[str, str] = Field(default_factory=dict)
 
 
 class ChatCreate(BaseModel):
@@ -157,6 +211,14 @@ class TrackingUpsert(BaseModel):
     label: str = ""
     config: dict[str, str] = Field(default_factory=dict)
     secrets: dict[str, str] = Field(default_factory=dict)
+    # First connection is always activated by the repository; later ones stay inactive unless True
+    activate: bool = False
+
+
+class TrackingPatch(BaseModel):
+    label: Optional[str] = None
+    config: Optional[dict[str, Any]] = None
+    secrets: Optional[dict[str, str]] = None
 
 
 class TrackingTestBody(BaseModel):
@@ -210,13 +272,24 @@ class CronBody(BaseModel):
 
 
 @router.get("/api/workflows")
-def list_workflows():
-    return {"workflows": _repo().list_workflows()}
+def list_workflows(
+    x_omc_project_id: str | None = Header(default=None, alias=PROJECT_HEADER),
+):
+    project_id = _resolve_project_id(x_omc_project_id)
+    return {"workflows": _repo().list_workflows(project_id=project_id), "project_id": project_id}
 
 
 @router.get("/api/workflows/active")
-def list_active():
-    return {"workflows": [w.to_dict() for w in _repo().list_active()]}
+def list_active(
+    x_omc_project_id: str | None = Header(default=None, alias=PROJECT_HEADER),
+):
+    project_id = _resolve_project_id(x_omc_project_id)
+    workflows = [
+        w.to_dict()
+        for w in _repo().list_active()
+        if w.project_id == project_id
+    ]
+    return {"workflows": workflows, "project_id": project_id}
 
 
 def _workflow_payload(workflow_id: str, wf) -> dict[str, Any]:
@@ -224,12 +297,42 @@ def _workflow_payload(workflow_id: str, wf) -> dict[str, Any]:
     data["chats"] = [
         enrich_chat_connection(workflow_id, c) for c in data.get("chats") or []
     ]
-    data["tracking"] = enrich_tracking_connection(
+    data["agents"] = [
+        enrich_agent_gateways(workflow_id, a) for a in data.get("agents") or []
+    ]
+    trackings = []
+    active = None
+    for t in data.get("trackings") or []:
+        enriched = enrich_tracking_connection(
+            workflow_id,
+            t.get("provider") or "none",
+            t.get("config") or {},
+            connection_id=t.get("id") or "",
+            is_active=bool(t.get("is_active")),
+        )
+        # Prefer row label over nested config label
+        if t.get("label"):
+            enriched["label"] = t["label"]
+        trackings.append(enriched)
+        if enriched.get("is_active"):
+            active = enriched
+    data["trackings"] = trackings
+    data["tracking"] = active or enrich_tracking_connection(
         workflow_id,
         data.get("tracking_provider") or "none",
         data.get("tracking_config") or {},
     )
     return data
+
+
+def _get_agent(workflow_id: str, agent_id: str) -> dict[str, Any]:
+    wf = _repo().get_workflow(workflow_id)
+    if not wf:
+        raise HTTPException(404, "Workflow not found")
+    agent = next((a for a in wf.agents if a.id == agent_id), None)
+    if not agent:
+        raise HTTPException(404, "Agent not found")
+    return agent.to_dict()
 
 
 @router.get("/api/workflows/{workflow_id}")
@@ -268,11 +371,24 @@ def activate_workflow(workflow_id: str, body: ActivateBody):
 
 
 @router.post("/api/workflows/clone")
-def clone_workflow(body: CloneBody):
+def clone_workflow(
+    body: CloneBody,
+    x_omc_project_id: str | None = Header(default=None, alias=PROJECT_HEADER),
+):
+    project_id = _resolve_project_id(x_omc_project_id)
+    project = _projects().get_project(project_id)
+    assert project
     try:
-        wf = _repo().clone_from_template(body.template_id, body.name)
+        wf = _repo().clone_from_template(
+            body.template_id,
+            body.name,
+            project_id=project_id,
+            coding_workspace=project.get("working_directory") or "",
+        )
     except ValueError as e:
-        raise HTTPException(404, str(e))
+        msg = str(e)
+        status = 404 if "not found" in msg.lower() else 400
+        raise HTTPException(status, msg)
     return wf.to_dict()
 
 
@@ -293,9 +409,10 @@ def list_templates():
 def patch_agent(workflow_id: str, agent_id: str, body: AgentPatch):
     patch = {k: v for k, v in body.model_dump().items() if v is not None}
     try:
-        return _repo().update_agent(agent_id, patch)
+        updated = _repo().update_agent(agent_id, patch)
     except ValueError as e:
         raise HTTPException(400, str(e))
+    return enrich_agent_gateways(workflow_id, updated)
 
 
 @router.post("/api/workflows/{workflow_id}/agents")
@@ -336,6 +453,97 @@ def delete_agent(workflow_id: str, agent_id: str):
     return {"ok": True}
 
 
+@router.post("/api/workflows/{workflow_id}/hermes-profiles/sync")
+def sync_hermes_profiles(workflow_id: str):
+    """Create/update omc-{role} profiles, write OMC tokens + enable channels, start gateways."""
+    if not _repo().get_workflow(workflow_id):
+        raise HTTPException(404, "Workflow not found")
+    try:
+        # Hermes profile gateways own the bot tokens — stop OMC bridge first
+        # so Telegram/Discord are not contested by two pollers.
+        from apps.api.bridge_proc import stop_bridge
+
+        bridge_stopped = stop_bridge()
+        summary = sync_workflow_hermes_profiles(
+            _repo(),
+            workflow_id,
+            start_gateways=True,
+            start_on_login=True,
+        )
+        summary["bridge_stopped"] = bridge_stopped
+        return summary
+    except HermesProfileError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@router.get("/api/workflows/{workflow_id}/hermes-profiles/setup-guide")
+def hermes_profiles_setup_guide(workflow_id: str):
+    """Return CLI setup instructions only (also assigns short profile names)."""
+    if not _repo().get_workflow(workflow_id):
+        raise HTTPException(404, "Workflow not found")
+    try:
+        return build_hermes_setup_guide(_repo(), workflow_id, assign_names=True)
+    except HermesProfileError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@router.get("/api/workflows/{workflow_id}/agents/{agent_id}/gateways")
+def get_agent_gateways(workflow_id: str, agent_id: str):
+    agent = _get_agent(workflow_id, agent_id)
+    return enrich_agent_gateways(workflow_id, agent)
+
+
+@router.patch("/api/workflows/{workflow_id}/agents/{agent_id}/gateways")
+def patch_agent_gateways(workflow_id: str, agent_id: str, body: AgentGatewayPatch):
+    agent = _get_agent(workflow_id, agent_id)
+    identity_updates = {}
+    if body.bot_user_id is not None:
+        identity_updates["bot_user_id"] = body.bot_user_id
+    if body.bot_username is not None:
+        identity_updates["bot_username"] = body.bot_username
+    if body.bot_email is not None:
+        identity_updates["bot_email"] = body.bot_email
+    try:
+        identity = save_agent_gateway(
+            workflow_id,
+            agent_id,
+            body.platform,
+            enabled=body.enabled,
+            identity_updates=identity_updates or None,
+            config_updates=body.config,
+            secret_updates=body.secrets,
+            current_identity=agent.get("platform_identity"),
+        )
+        updated = _repo().update_agent(agent_id, {"platform_identity": identity})
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return enrich_agent_gateways(workflow_id, updated)
+
+
+@router.post("/api/workflows/{workflow_id}/agents/{agent_id}/gateways/{platform}/test")
+def test_agent_gateway(
+    workflow_id: str,
+    agent_id: str,
+    platform: str,
+    body: AgentGatewayTestBody = AgentGatewayTestBody(),
+):
+    agent = _get_agent(workflow_id, agent_id)
+    plat = (body.platform or platform or "").strip().lower()
+    if plat not in PLATFORMS:
+        raise HTTPException(400, f"Invalid platform. Choose from {PLATFORMS}")
+    stored = resolve_agent_gateway_credentials(
+        workflow_id, agent_id, plat, agent.get("platform_identity")
+    )
+    credentials: dict[str, str] = {**stored}
+    for k, v in (body.config or {}).items():
+        if v:
+            credentials[k] = str(v)
+    for k, v in (body.secrets or {}).items():
+        if v and not str(v).startswith("(stored"):
+            credentials[k] = str(v)
+    return test_chat_connection(plat, credentials)
+
+
 @router.get("/api/platforms")
 def platforms():
     from core.secrets import CHAT_CONNECTION_FIELDS
@@ -343,7 +551,13 @@ def platforms():
     return {
         "platforms": list(PLATFORMS),
         "connection_fields": CHAT_CONNECTION_FIELDS,
+        "gateway_fields": AGENT_GATEWAY_FIELDS,
     }
+
+
+@router.get("/api/platforms/gateway-guides")
+def platform_gateway_guides():
+    return gateway_guides_payload()
 
 
 @router.get("/api/tracking-providers")
@@ -354,23 +568,22 @@ def tracking_providers():
     }
 
 
-@router.put("/api/workflows/{workflow_id}/tracking")
-def upsert_tracking(workflow_id: str, body: TrackingUpsert):
-    provider = (body.provider or "").strip().lower()
-    if provider not in TRACKING_PROVIDERS:
-        raise HTTPException(400, f"Invalid provider. Choose from {TRACKING_PROVIDERS}")
-    wf = _repo().get_workflow(workflow_id)
-    if not wf:
-        raise HTTPException(404, "Workflow not found")
-
-    # Preserve status_map / other nested extras when updating same provider
-    existing = dict(wf.tracking_config or {})
+def _prepare_tracking_config(
+    workflow_id: str,
+    provider: str,
+    *,
+    body_config: dict | None,
+    body_secrets: dict | None,
+    label: str,
+    existing_config: dict | None = None,
+    connection_id: str = "",
+) -> dict[str, Any]:
+    existing = dict(existing_config or {})
     existing_nested = dict(existing.get(provider) or {})
     status_map = existing_nested.get("status_map") or existing.get("status_map")
-    body_cfg = dict(body.config or {})
+    body_cfg = dict(body_config or {})
     if isinstance(body_cfg.get("status_map"), dict):
         status_map = body_cfg.pop("status_map")
-    # Merge prior non-secret config so partial updates don't wipe fields
     prior_config = {
         k: v
         for k, v in existing_nested.items()
@@ -382,16 +595,17 @@ def upsert_tracking(workflow_id: str, body: TrackingUpsert):
         workflow_id,
         provider,
         prior_config,
-        body.secrets,
-        label=body.label
-        or str(existing.get("label") or "")
-        or f"{provider[:1].upper()}{provider[1:]} #1",
+        body_secrets,
+        label=label,
+        connection_id=connection_id,
+        existing_config=existing,
     )
     if status_map:
         tracking_config = _attach_status_map(tracking_config, provider, status_map)
 
-    # Auto-discover board columns so kanban → tracker sync works on short boards
-    creds = _tracking_credentials(workflow_id, provider, tracking_config)
+    creds = _tracking_credentials(
+        workflow_id, provider, tracking_config, connection_id=connection_id
+    )
     discovered = discover_tracking_status_map(provider, creds)
     if discovered.get("ok") and discovered.get("status_map"):
         tracking_config = _attach_status_map(
@@ -399,22 +613,196 @@ def upsert_tracking(workflow_id: str, body: TrackingUpsert):
             provider,
             discovered["status_map"],
         )
+    return tracking_config
 
+
+@router.post("/api/workflows/{workflow_id}/trackings")
+def create_tracking(workflow_id: str, body: TrackingUpsert):
+    provider = (body.provider or "").strip().lower()
+    if provider not in TRACKING_PROVIDERS:
+        raise HTTPException(400, f"Invalid provider. Choose from {TRACKING_PROVIDERS}")
+    wf = _repo().get_workflow(workflow_id)
+    if not wf:
+        raise HTTPException(404, "Workflow not found")
+
+    label = (body.label or "").strip() or f"{provider[:1].upper()}{provider[1:]} #1"
     try:
-        wf = _repo().update_workflow(
+        row = _repo().add_tracking(
             workflow_id,
             {
-                "tracking_provider": provider,
-                "tracking_config": tracking_config,
+                "provider": provider,
+                "label": label,
+                "config": {},
+                "is_active": bool(body.activate),
             },
         )
     except ValueError as e:
-        raise HTTPException(404, str(e))
+        raise HTTPException(400, str(e))
+
+    tracking_config = _prepare_tracking_config(
+        workflow_id,
+        provider,
+        body_config=body.config,
+        body_secrets=body.secrets,
+        label=label,
+        connection_id=row["id"],
+    )
+    try:
+        _repo().update_tracking(
+            workflow_id,
+            row["id"],
+            {"label": label, "config": tracking_config},
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    wf = _repo().get_workflow(workflow_id)
     return _workflow_payload(workflow_id, wf)
+
+
+@router.patch("/api/workflows/{workflow_id}/trackings/{tracking_id}")
+def patch_tracking(workflow_id: str, tracking_id: str, body: TrackingPatch):
+    wf = _repo().get_workflow(workflow_id)
+    if not wf:
+        raise HTTPException(404, "Workflow not found")
+    current = next((t for t in wf.trackings if t.id == tracking_id), None)
+    if not current:
+        raise HTTPException(404, "Tracking connection not found")
+
+    label = (
+        body.label
+        if body.label is not None
+        else (current.label or str((current.config or {}).get("label") or ""))
+    )
+    tracking_config = _prepare_tracking_config(
+        workflow_id,
+        current.provider,
+        body_config=body.config,
+        body_secrets=body.secrets,
+        label=label,
+        existing_config=current.config,
+        connection_id=tracking_id,
+    )
+    try:
+        _repo().update_tracking(
+            workflow_id,
+            tracking_id,
+            {"label": label, "config": tracking_config},
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    wf = _repo().get_workflow(workflow_id)
+    return _workflow_payload(workflow_id, wf)
+
+
+@router.delete("/api/workflows/{workflow_id}/trackings/{tracking_id}")
+def delete_tracking(workflow_id: str, tracking_id: str):
+    try:
+        _repo().delete_tracking(workflow_id, tracking_id)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    wf = _repo().get_workflow(workflow_id)
+    if not wf:
+        raise HTTPException(404, "Workflow not found")
+    return _workflow_payload(workflow_id, wf)
+
+
+@router.post("/api/workflows/{workflow_id}/trackings/{tracking_id}/activate")
+def activate_tracking(workflow_id: str, tracking_id: str):
+    try:
+        _repo().set_active_tracking(workflow_id, tracking_id)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    wf = _repo().get_workflow(workflow_id)
+    if not wf:
+        raise HTTPException(404, "Workflow not found")
+    return _workflow_payload(workflow_id, wf)
+
+
+@router.post("/api/workflows/{workflow_id}/trackings/{tracking_id}/test")
+def test_tracking_connection_by_id(
+    workflow_id: str,
+    tracking_id: str,
+    body: TrackingTestBody = TrackingTestBody(),
+):
+    wf = _repo().get_workflow(workflow_id)
+    if not wf:
+        raise HTTPException(404, "Workflow not found")
+    current = next((t for t in wf.trackings if t.id == tracking_id), None)
+    if not current:
+        raise HTTPException(404, "Tracking connection not found")
+    provider = (body.provider or current.provider or "").strip().lower()
+    if provider not in TRACKING_PROVIDERS:
+        return {
+            "ok": False,
+            "platform": provider or "none",
+            "message": "Save a Jira or Plane tracking connection before testing",
+        }
+    credentials = _tracking_credentials(
+        workflow_id,
+        provider,
+        current.config,
+        connection_id=tracking_id,
+    )
+    for k, v in (body.config or {}).items():
+        if v and k != "status_map":
+            credentials[k] = str(v)
+    for k, v in (body.secrets or {}).items():
+        if v and not str(v).startswith("(stored"):
+            credentials[k] = str(v)
+    result = test_tracking_connection(provider, credentials)
+    if not result.get("ok"):
+        return result
+    discovered = discover_tracking_status_map(provider, credentials)
+    if discovered.get("ok") and discovered.get("status_map"):
+        tracking_config = _attach_status_map(
+            dict(current.config or {}),
+            provider,
+            discovered["status_map"],
+        )
+        try:
+            _repo().update_tracking(
+                workflow_id, tracking_id, {"config": tracking_config}
+            )
+        except ValueError:
+            pass
+        result = {
+            **result,
+            "status_map": discovered["status_map"],
+            "available_statuses": discovered.get("available") or [],
+            "message": f"{result.get('message')} · {discovered.get('message')}",
+        }
+    return result
+
+
+@router.put("/api/workflows/{workflow_id}/tracking")
+def upsert_tracking(workflow_id: str, body: TrackingUpsert):
+    """Legacy: create a new tracking connection (or update the active one)."""
+    wf = _repo().get_workflow(workflow_id)
+    if not wf:
+        raise HTTPException(404, "Workflow not found")
+    active = next((t for t in wf.trackings if t.is_active), None)
+    if active and (body.provider or "").strip().lower() == active.provider:
+        return patch_tracking(
+            workflow_id,
+            active.id,
+            TrackingPatch(
+                label=body.label or None,
+                config=body.config or None,
+                secrets=body.secrets or None,
+            ),
+        )
+    return create_tracking(workflow_id, body)
 
 
 @router.delete("/api/workflows/{workflow_id}/tracking")
 def clear_tracking(workflow_id: str):
+    """Legacy: remove the active tracking connection."""
+    wf = _repo().get_workflow(workflow_id)
+    if not wf:
+        raise HTTPException(404, "Workflow not found")
+    active = next((t for t in wf.trackings if t.is_active), None)
+    if active:
+        return delete_tracking(workflow_id, active.id)
     try:
         wf = _repo().update_workflow(
             workflow_id,
@@ -431,6 +819,10 @@ def test_tracking(workflow_id: str, body: TrackingTestBody = TrackingTestBody())
     wf = _repo().get_workflow(workflow_id)
     if not wf:
         raise HTTPException(404, "Workflow not found")
+    active = next((t for t in wf.trackings if t.is_active), None)
+    if active:
+        return test_tracking_connection_by_id(workflow_id, active.id, body)
+
     provider = (body.provider or wf.tracking_provider or "").strip().lower()
     if provider not in TRACKING_PROVIDERS:
         return {
@@ -440,7 +832,6 @@ def test_tracking(workflow_id: str, body: TrackingTestBody = TrackingTestBody())
         }
 
     credentials = _tracking_credentials(workflow_id, provider, wf.tracking_config)
-    # Draft config/secrets override
     for k, v in (body.config or {}).items():
         if v and k != "status_map":
             credentials[k] = str(v)
@@ -480,15 +871,22 @@ def test_tracking(workflow_id: str, body: TrackingTestBody = TrackingTestBody())
 
 @router.post("/api/workflows/{workflow_id}/tracking/sync-status-map")
 def sync_tracking_status_map(workflow_id: str):
-    """Re-discover and persist SDLC → board status_map for the active tracker."""
+    """Re-discover and persist SDLC to board status_map for the active tracker."""
     wf = _repo().get_workflow(workflow_id)
     if not wf:
         raise HTTPException(404, "Workflow not found")
-    provider = (wf.tracking_provider or "").strip().lower()
+    active = next((t for t in wf.trackings if t.is_active), None)
+    provider = (
+        (active.provider if active else wf.tracking_provider) or ""
+    ).strip().lower()
     if provider not in TRACKING_PROVIDERS:
         raise HTTPException(400, "No Jira/Plane tracking connection configured")
 
-    credentials = _tracking_credentials(workflow_id, provider, wf.tracking_config)
+    cfg = active.config if active else wf.tracking_config
+    connection_id = active.id if active else ""
+    credentials = _tracking_credentials(
+        workflow_id, provider, cfg, connection_id=connection_id
+    )
     discovered = discover_tracking_status_map(provider, credentials)
     if not discovered.get("ok"):
         return {
@@ -498,17 +896,23 @@ def sync_tracking_status_map(workflow_id: str):
         }
 
     tracking_config = _attach_status_map(
-        dict(wf.tracking_config or {}),
+        dict(cfg or {}),
         provider,
         discovered["status_map"],
     )
-    wf = _repo().update_workflow(
-        workflow_id,
-        {
-            "tracking_provider": provider,
-            "tracking_config": tracking_config,
-        },
-    )
+    if active:
+        _repo().update_tracking(
+            workflow_id, active.id, {"config": tracking_config}
+        )
+        wf = _repo().get_workflow(workflow_id)
+    else:
+        wf = _repo().update_workflow(
+            workflow_id,
+            {
+                "tracking_provider": provider,
+                "tracking_config": tracking_config,
+            },
+        )
     return {
         "ok": True,
         "provider": provider,

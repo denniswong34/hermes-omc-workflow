@@ -35,6 +35,9 @@ Rules:
 3. Only mention agents listed in your IN-CHANNEL RULES for this topic.
 4. Always include `TASK-NNN` when the work has a ticket.
 5. Keep handoffs self-contained (goal, constraints, status keyword).
+6. Hand off only when the target has actionable work **now**. Never ping a
+   downstream agent with wait/standby text (`@Coder: wait for SA`) — that
+   starts a concurrent turn that races the real handoff.
 
 ## Coding agents
 

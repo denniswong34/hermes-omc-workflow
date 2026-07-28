@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 from pathlib import Path
@@ -18,14 +19,18 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
 from apps.api.deps import agents_dir, config_path, secrets_env_path, task_map_path
+
+logger = logging.getLogger(__name__)
 from apps.api.auth_router import router as auth_router
+from apps.api.email import log_active_provider
+from apps.api.projects import router as projects_router
 from apps.api.workflows import router as workflows_router
 from core.db.seed import seed_database
 from core.db import get_db
 from core.memory import create_memory_store
 from core.workflow import get_pool
 
-app = FastAPI(title="OMC Agentic OS API", version="0.3.0")
+app = FastAPI(title="OMC Agentic OS API", version="0.4.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -35,14 +40,45 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(projects_router)
 app.include_router(workflows_router)
 app.include_router(auth_router)
 
 
+def _load_secrets_env() -> None:
+    """Load ~/.hermes/omc/secrets.env into os.environ (if it exists and not already set).
+
+    Shell exports take precedence (unset vars are filled; already-set vars
+    are left alone), so explicit ``export SMTP_HOST=...`` before startup
+    still wins over the file.
+    """
+    path = secrets_env_path()
+    if not path.exists():
+        return
+    imported = 0
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        k = k.strip()
+        v = v.strip()
+        # Do not clobber vars already set in the shell / parent process
+        if k and v and k not in os.environ:
+            os.environ[k] = v
+            imported += 1
+    if imported:
+        logger.info("Loaded %d keys from %s", imported, path)
+
+
 @app.on_event("startup")
 def _startup():
+    # Load global secrets.env into the process environment (overridable by
+    # explicit env vars, so shell exports still win).
+    _load_secrets_env()
     seed_database(get_db(), activate=True)
     get_pool()
+    log_active_provider()
 
 
 def _load_raw_yaml() -> dict:
@@ -102,7 +138,7 @@ def health():
     return {
         "ok": True,
         "service": "agentic-os-api",
-        "version": "0.3.0",
+        "version": app.version,
         "repo": str(REPO_ROOT),
         "active_workflows": len(pool.runtimes),
     }

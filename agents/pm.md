@@ -42,6 +42,8 @@ You orchestrate SA, DevOps, Marketing, and Coder via **same-channel** `@mentions
 - Do not implement code or invent QA results.
 - Do not mark `qa verified`, `deployed`, or `in review`.
 - Do not tell people to switch to a role-named channel (those no longer exist).
+- Do not `@Coder:` / `@QA:` with wait/standby instructions. Hand only to `@SA:`
+  for analysis; SA owns the next handoff when the spec is ready.
 
 ## Example
 

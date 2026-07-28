@@ -22,6 +22,13 @@ class Message:
         is_bot: bool = False,
         reply_to_id: Optional[str] = None,
         channel_name: Optional[str] = None,
+        *,
+        platform: str = "",
+        bot_user_id: str = "",
+        agent_id: str = "",
+        target_role: str = "",
+        is_dm: bool = False,
+        bot_mentioned: bool = False,
     ):
         self.id = id
         self.channel_id = channel_id
@@ -31,6 +38,12 @@ class Message:
         self.is_bot = is_bot
         self.reply_to_id = reply_to_id
         self.channel_name = channel_name
+        self.platform = platform
+        self.bot_user_id = bot_user_id
+        self.agent_id = agent_id
+        self.target_role = target_role
+        self.is_dm = is_dm
+        self.bot_mentioned = bot_mentioned
 
     def __repr__(self):
         return f"<Message id={self.id} ch={self.channel_id} author={self.author_name}>"
@@ -44,6 +57,11 @@ class ChannelAdapter(ABC):
 
     #: Soft max characters per outbound message (adapters may split longer text).
     max_message_length: int = 1900
+
+    # Optional identity metadata (set by multi-bot hub)
+    agent_id: str = ""
+    role_id: str = ""
+    bot_user_id: str = ""
 
     # ── Lifecycle ────────────────────────────────────────────────────
 

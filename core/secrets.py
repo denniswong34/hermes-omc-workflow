@@ -55,6 +55,25 @@ CHAT_CONNECTION_FIELDS: dict[str, list[dict[str, Any]]] = {
     ],
 }
 
+# Per-agent gateway credentials (no message_format — that stays on chat connections)
+AGENT_GATEWAY_FIELDS: dict[str, list[dict[str, Any]]] = {
+    "discord": [
+        {"key": "DISCORD_BOT_TOKEN", "label": "Bot token", "kind": "secret", "input": "password"},
+    ],
+    "slack": [
+        {"key": "SLACK_BOT_TOKEN", "label": "Bot token", "kind": "secret", "input": "password"},
+        {"key": "SLACK_APP_TOKEN", "label": "App token (Socket Mode)", "kind": "secret", "input": "password"},
+    ],
+    "telegram": [
+        {"key": "TELEGRAM_BOT_TOKEN", "label": "Bot token", "kind": "secret", "input": "password"},
+    ],
+    "zulip": [
+        {"key": "ZULIP_SITE", "label": "Site URL", "kind": "config", "input": "text"},
+        {"key": "ZULIP_EMAIL", "label": "Bot email", "kind": "config", "input": "text"},
+        {"key": "ZULIP_API_KEY", "label": "API key", "kind": "secret", "input": "password"},
+    ],
+}
+
 TRACKING_PROVIDERS = ("jira", "plane")
 
 # Connection form fields per ticket tracker (Tracking section dialog)
@@ -117,7 +136,11 @@ SECRET_FIELD_META: dict[str, str] = {
     "JIRA_BASE_URL": "Jira base URL",
     "PLANE_API_KEY": "Plane API key",
     "PLANE_BASE_URL": "Plane base URL",
+    "GITHUB_USERNAME": "GitHub username",
+    "GITHUB_PAT": "GitHub personal access token",
 }
+
+PROJECT_SECRET_KEYS = ("GITHUB_USERNAME", "GITHUB_PAT")
 
 
 def secrets_root() -> Path:
@@ -135,6 +158,15 @@ def workflow_secrets_path(workflow_id: str) -> Path:
 def chat_secret_key(chat_id: str, field_key: str) -> str:
     """Namespace secrets per chat connection inside the workflow env file."""
     return f"CHAT_{chat_id}_{field_key}"
+
+
+def agent_secret_key(agent_id: str, field_key: str) -> str:
+    """Namespace secrets per agent gateway inside the workflow env file."""
+    return f"AGENT_{agent_id}_{field_key}"
+
+
+def gateway_fields_for_platform(platform: str) -> list[dict[str, Any]]:
+    return list(AGENT_GATEWAY_FIELDS.get((platform or "").lower(), []))
 
 
 def read_env_file(path: Path) -> dict[str, str]:
@@ -297,17 +329,29 @@ def tracking_secret_env(provider: str, field_key: str) -> str:
     return TRACKING_SECRET_ENV.get(f"{provider}:{field_key}") or field_key.upper()
 
 
+def tracking_connection_secret_key(connection_id: str, field_key: str) -> str:
+    """Scoped secret key for a tracking connection (mirrors CHAT_{id}_*)."""
+    return f"TRACK_{connection_id}_{field_key}"
+
+
 def enrich_tracking_connection(
     workflow_id: str,
     provider: str,
     tracking_config: dict[str, Any] | None,
+    *,
+    connection_id: str = "",
+    is_active: bool = False,
 ) -> dict[str, Any]:
     """Attach field schemas + stored flags for Tracking UI."""
     provider = (provider or "none").strip().lower()
     cfg = dict(tracking_config or {})
     # Prefer nested provider block when present
     nested = dict(cfg.get(provider) or {}) if provider in TRACKING_PROVIDERS else {}
-    flat = {k: v for k, v in cfg.items() if k not in ("provider", "jira", "plane", "label")}
+    flat = {
+        k: v
+        for k, v in cfg.items()
+        if k not in ("provider", "jira", "plane", "label")
+    }
     merged = {**flat, **nested}
 
     fields = connection_fields_for_tracking(provider)
@@ -318,7 +362,16 @@ def enrich_tracking_connection(
         key = f["key"]
         if f["kind"] == "secret":
             env_key = f.get("secret_env") or tracking_secret_env(provider, key)
-            has = bool(secrets.get(env_key) or merged.get(key))
+            scoped = (
+                tracking_connection_secret_key(connection_id, key)
+                if connection_id
+                else ""
+            )
+            has = bool(
+                (scoped and secrets.get(scoped))
+                or secrets.get(env_key)
+                or merged.get(key)
+            )
             stored_secrets[key] = has
             values[key] = ""
         else:
@@ -329,6 +382,7 @@ def enrich_tracking_connection(
         label = f"{provider[:1].upper()}{provider[1:]} #1"
 
     return {
+        "id": connection_id or "",
         "provider": provider,
         "label": label,
         "config": merged,
@@ -336,6 +390,7 @@ def enrich_tracking_connection(
         "stored_secrets": stored_secrets,
         "connection_values": values,
         "configured": provider in TRACKING_PROVIDERS,
+        "is_active": bool(is_active),
     }
 
 
@@ -345,10 +400,13 @@ def save_tracking_connection(
     config_updates: dict[str, Any] | None,
     secret_updates: dict[str, str] | None,
     label: str | None = None,
+    *,
+    connection_id: str = "",
+    existing_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Persist tracking non-secret config (returned for DB) and secrets to env file.
-    Returns tracking_config payload to store on the workflow.
+    Returns tracking_config payload to store on the connection / workflow cache.
     """
     provider = (provider or "none").strip().lower()
     if provider not in TRACKING_PROVIDERS:
@@ -356,7 +414,15 @@ def save_tracking_connection(
 
     fields = connection_fields_for_tracking(provider)
     field_by_key = {f["key"]: f for f in fields}
-    provider_cfg: dict[str, str] = {}
+    # Start from existing nested provider config so partial updates keep fields
+    prior = dict((existing_config or {}).get(provider) or {})
+    if not prior and existing_config:
+        prior = {
+            k: v
+            for k, v in (existing_config or {}).items()
+            if k not in ("provider", "jira", "plane", "label", "status_map")
+        }
+    provider_cfg: dict[str, Any] = dict(prior)
     secret_entries: dict[str, str] = {}
 
     if config_updates:
@@ -364,6 +430,8 @@ def save_tracking_connection(
             meta = field_by_key.get(k)
             if meta and meta["kind"] == "config":
                 provider_cfg[k] = str(v) if v is not None else ""
+            elif k == "status_map" and isinstance(v, dict):
+                provider_cfg["status_map"] = v
 
     if secret_updates:
         for k, v in secret_updates.items():
@@ -372,8 +440,11 @@ def save_tracking_connection(
                 continue
             if v is None or v == "" or str(v).startswith("(stored"):
                 continue
-            env_key = meta.get("secret_env") or tracking_secret_env(provider, k)
-            secret_entries[env_key] = str(v)
+            legacy_env = meta.get("secret_env") or tracking_secret_env(provider, k)
+            if connection_id:
+                secret_entries[tracking_connection_secret_key(connection_id, k)] = str(v)
+            # Keep legacy unscoped key so older runtimes still resolve the active tracker
+            secret_entries[legacy_env] = str(v)
 
     if secret_entries:
         update_workflow_secrets(workflow_id, secret_entries)
@@ -381,19 +452,33 @@ def save_tracking_connection(
     out: dict[str, Any] = {provider: provider_cfg}
     if label is not None:
         out["label"] = str(label).strip()
+    elif existing_config and existing_config.get("label"):
+        out["label"] = str(existing_config.get("label") or "").strip()
     return out
 
 
-def resolve_tracking_secrets(workflow_id: str, provider: str) -> dict[str, str]:
-    """Resolve secret field values for a tracking provider."""
+def resolve_tracking_secrets(
+    workflow_id: str,
+    provider: str,
+    *,
+    connection_id: str = "",
+) -> dict[str, str]:
+    """Resolve secret field values for a tracking provider / connection."""
     provider = (provider or "").strip().lower()
     secrets = read_env_file(workflow_secrets_path(workflow_id))
     out: dict[str, str] = {}
     for f in connection_fields_for_tracking(provider):
         if f["kind"] != "secret":
             continue
-        env_key = f.get("secret_env") or tracking_secret_env(provider, f["key"])
-        out[f["key"]] = secrets.get(env_key) or ""
+        legacy_env = f.get("secret_env") or tracking_secret_env(provider, f["key"])
+        scoped = (
+            tracking_connection_secret_key(connection_id, f["key"])
+            if connection_id
+            else ""
+        )
+        out[f["key"]] = (
+            (scoped and secrets.get(scoped)) or secrets.get(legacy_env) or ""
+        )
     return out
 
 
@@ -401,6 +486,8 @@ def build_tracker_config(
     workflow_id: str,
     provider: str,
     tracking_config: dict[str, Any] | None,
+    *,
+    connection_id: str = "",
 ) -> dict[str, Any]:
     """Build create_tracker()-ready config with secrets injected."""
     provider = (provider or "none").strip().lower()
@@ -410,11 +497,257 @@ def build_tracker_config(
         return out
 
     nested = dict(cfg.get(provider) or {})
-    flat = {k: v for k, v in cfg.items() if k not in ("provider", "jira", "plane", "label")}
+    flat = {
+        k: v
+        for k, v in cfg.items()
+        if k not in ("provider", "jira", "plane", "label")
+    }
     merged = {**flat, **nested}
-    secrets = resolve_tracking_secrets(workflow_id, provider)
+    secrets = resolve_tracking_secrets(
+        workflow_id, provider, connection_id=connection_id
+    )
     for k, v in secrets.items():
         if v:
             merged[k] = v
     out[provider] = merged
     return out
+
+
+def _default_platform_identity() -> dict[str, Any]:
+    return {
+        p: {
+            "enabled": False,
+            "bot_user_id": "",
+            "bot_username": "",
+            "bot_email": "",
+            "site": "",
+            "config": {},
+        }
+        for p in PLATFORMS
+    }
+
+
+def normalize_platform_identity(raw: Any) -> dict[str, Any]:
+    base = _default_platform_identity()
+    if not isinstance(raw, dict):
+        return base
+    for platform in PLATFORMS:
+        block = raw.get(platform)
+        if not isinstance(block, dict):
+            continue
+        merged = dict(base[platform])
+        if "enabled" in block:
+            merged["enabled"] = bool(block["enabled"])
+        for key in ("bot_user_id", "bot_username", "bot_email", "site"):
+            if key in block and block[key] is not None:
+                merged[key] = str(block[key])
+        if isinstance(block.get("config"), dict):
+            merged["config"] = {str(k): str(v) for k, v in block["config"].items()}
+        base[platform] = merged
+    return base
+
+
+def enrich_agent_gateways(
+    workflow_id: str,
+    agent: dict[str, Any],
+) -> dict[str, Any]:
+    """Attach gateway field schemas + stored flags for Agent Gateway UI."""
+    secrets = read_env_file(workflow_secrets_path(workflow_id))
+    identity = normalize_platform_identity(agent.get("platform_identity") or {})
+    platforms_out: dict[str, Any] = {}
+    for platform in PLATFORMS:
+        fields = gateway_fields_for_platform(platform)
+        stored_secrets: dict[str, bool] = {}
+        values: dict[str, str] = {}
+        plat_id = identity.get(platform) or {}
+        cfg = plat_id.get("config") if isinstance(plat_id.get("config"), dict) else {}
+        for f in fields:
+            key = f["key"]
+            if f["kind"] == "secret":
+                scoped = agent_secret_key(agent["id"], key)
+                stored_secrets[key] = bool(secrets.get(scoped))
+                values[key] = ""
+            elif key == "ZULIP_SITE":
+                values[key] = str(cfg.get(key) or plat_id.get("site") or "")
+            elif key == "ZULIP_EMAIL":
+                values[key] = str(cfg.get(key) or plat_id.get("bot_email") or "")
+            else:
+                values[key] = str(cfg.get(key) or "")
+        platforms_out[platform] = {
+            "enabled": bool(plat_id.get("enabled")),
+            "bot_user_id": str(plat_id.get("bot_user_id") or ""),
+            "bot_username": str(plat_id.get("bot_username") or ""),
+            "bot_email": str(plat_id.get("bot_email") or ""),
+            "connection_fields": fields,
+            "stored_secrets": stored_secrets,
+            "connection_values": values,
+            "configured": any(stored_secrets.values())
+            or any(bool(values.get(f["key"])) for f in fields if f["kind"] == "config"),
+        }
+    out = dict(agent)
+    out["platform_identity"] = identity
+    out["gateways"] = platforms_out
+    out["gateway_fields"] = AGENT_GATEWAY_FIELDS
+    return out
+
+
+def save_agent_gateway(
+    workflow_id: str,
+    agent_id: str,
+    platform: str,
+    *,
+    enabled: bool | None = None,
+    identity_updates: dict[str, Any] | None = None,
+    config_updates: dict[str, Any] | None = None,
+    secret_updates: dict[str, str] | None = None,
+    current_identity: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Persist per-agent gateway secrets and return updated platform_identity dict
+    (caller writes platform_identity_json to DB).
+    """
+    platform = (platform or "").strip().lower()
+    if platform not in PLATFORMS:
+        raise ValueError(f"platform must be one of {PLATFORMS}")
+
+    identity = normalize_platform_identity(current_identity)
+    block = dict(identity[platform])
+    cfg = dict(block.get("config") or {}) if isinstance(block.get("config"), dict) else {}
+
+    if enabled is not None:
+        block["enabled"] = bool(enabled)
+    if identity_updates:
+        for k in ("bot_user_id", "bot_username", "bot_email"):
+            if k in identity_updates and identity_updates[k] is not None:
+                block[k] = str(identity_updates[k])
+
+    fields = gateway_fields_for_platform(platform)
+    field_by_key = {f["key"]: f for f in fields}
+    secret_entries: dict[str, str] = {}
+
+    if config_updates:
+        for k, v in config_updates.items():
+            meta = field_by_key.get(k)
+            if meta and meta["kind"] == "config":
+                cfg[k] = str(v) if v is not None else ""
+                if k == "ZULIP_SITE":
+                    block["site"] = cfg[k]
+                elif k == "ZULIP_EMAIL":
+                    block["bot_email"] = cfg[k]
+
+    if secret_updates:
+        for k, v in secret_updates.items():
+            meta = field_by_key.get(k)
+            if not meta or meta["kind"] != "secret":
+                continue
+            if v is None or v == "" or str(v).startswith("(stored"):
+                continue
+            secret_entries[agent_secret_key(agent_id, k)] = str(v)
+
+    if cfg:
+        block["config"] = cfg
+    identity[platform] = block
+
+    if secret_entries:
+        update_workflow_secrets(workflow_id, secret_entries)
+    return identity
+
+
+def resolve_agent_gateway_credentials(
+    workflow_id: str, agent_id: str, platform: str, identity: dict[str, Any] | None = None
+) -> dict[str, str]:
+    """Resolve flat credential dict for an agent gateway (for tests / adapters)."""
+    platform = (platform or "").strip().lower()
+    secrets = read_env_file(workflow_secrets_path(workflow_id))
+    identity = normalize_platform_identity(identity)
+    block = identity.get(platform) or {}
+    cfg = block.get("config") if isinstance(block.get("config"), dict) else {}
+    out: dict[str, str] = {}
+    for f in gateway_fields_for_platform(platform):
+        key = f["key"]
+        if f["kind"] == "secret":
+            out[key] = secrets.get(agent_secret_key(agent_id, key)) or ""
+        else:
+            if key == "ZULIP_SITE":
+                out[key] = str(cfg.get(key) or block.get("site") or "")
+            elif key == "ZULIP_EMAIL":
+                out[key] = str(cfg.get(key) or block.get("bot_email") or "")
+            else:
+                out[key] = str(cfg.get(key) or "")
+    return out
+
+
+def agent_has_gateway_credentials(
+    workflow_id: str, agent_id: str, platform: str, identity: dict[str, Any] | None = None
+) -> bool:
+    creds = resolve_agent_gateway_credentials(workflow_id, agent_id, platform, identity)
+    identity = normalize_platform_identity(identity)
+    if not identity.get(platform, {}).get("enabled"):
+        return False
+    if platform == "discord":
+        return bool(creds.get("DISCORD_BOT_TOKEN"))
+    if platform == "telegram":
+        return bool(creds.get("TELEGRAM_BOT_TOKEN"))
+    if platform == "slack":
+        return bool(creds.get("SLACK_BOT_TOKEN") and creds.get("SLACK_APP_TOKEN"))
+    if platform == "zulip":
+        return bool(
+            creds.get("ZULIP_API_KEY")
+            and creds.get("ZULIP_SITE")
+            and creds.get("ZULIP_EMAIL")
+        )
+    return False
+
+
+def projects_secrets_root() -> Path:
+    return Path(
+        os.environ.get(
+            "OMC_PROJECT_SECRETS_DIR",
+            str(Path.home() / ".hermes" / "omc" / "projects"),
+        )
+    ).expanduser()
+
+
+def project_secrets_path(project_id: str) -> Path:
+    root = projects_secrets_root() / project_id
+    root.mkdir(parents=True, exist_ok=True)
+    return root / "secrets.env"
+
+
+def get_project_secrets_meta(project_id: str) -> dict[str, Any]:
+    path = project_secrets_path(project_id)
+    data = read_env_file(path)
+    return {
+        "project_id": project_id,
+        "path": str(path),
+        "keys": sorted(k for k in data.keys() if data.get(k)),
+        "has_pat": bool(data.get("GITHUB_PAT")),
+        "has_username": bool(data.get("GITHUB_USERNAME")),
+        "note": "Values are write-only; blank on save keeps existing",
+    }
+
+
+def update_project_secrets(project_id: str, entries: dict[str, str]) -> dict[str, Any]:
+    path = project_secrets_path(project_id)
+    existing = read_env_file(path)
+    for k, v in entries.items():
+        if not k:
+            continue
+        if v is None or v == "" or str(v).startswith("(stored"):
+            continue
+        existing[k] = str(v)
+    write_env_file(path, existing)
+    return get_project_secrets_meta(project_id)
+
+
+def resolve_project_secrets(project_id: str) -> dict[str, str]:
+    return read_env_file(project_secrets_path(project_id))
+
+
+def delete_project_secrets(project_id: str) -> None:
+    path = project_secrets_path(project_id)
+    if path.exists():
+        path.unlink()
+    parent = path.parent
+    if parent.exists() and parent.is_dir() and not any(parent.iterdir()):
+        parent.rmdir()

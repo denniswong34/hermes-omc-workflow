@@ -13,3 +13,7 @@ apps/agentic-os/.next/
 apps/agentic-os/node_modules/
 test-results/
 .pytest_cache/
+.hermes/
+
+.local-secrets/
+.run/

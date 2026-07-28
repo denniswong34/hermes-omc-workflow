@@ -25,6 +25,8 @@ class CursorBackend(CodingBackend):
         *,
         workspace: str = "",
         session_key: str = "",
+        profile: str = "",
+        model: str = "",
     ) -> str:
         if not self.available():
             raise RuntimeError(

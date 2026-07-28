@@ -35,15 +35,20 @@ export default function KanbanPage() {
   }
 
   useEffect(() => {
-    (async () => {
+    const boot = async () => {
       try {
+        setErr("");
         const w = await apiGet<{ workflows: Wf[] }>("/api/workflows");
         setWorkflows(w.workflows.filter((x) => x.is_active));
         await load("");
       } catch (e) {
         setErr(e instanceof Error ? e.message : String(e));
+        setWorkflows([]);
       }
-    })();
+    };
+    boot();
+    window.addEventListener("omc-project-changed", boot);
+    return () => window.removeEventListener("omc-project-changed", boot);
   }, []);
 
   return (

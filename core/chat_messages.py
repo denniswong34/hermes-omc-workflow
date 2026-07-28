@@ -34,6 +34,10 @@ _BOT_OWN_MARKERS = (
     "RESPONSE ·",
     "╔══",
     "━━━━━━━━",
+    "(cont.",
+    " ·  reply",
+    " ·  handoff",
+    " ·  working",
 )
 
 

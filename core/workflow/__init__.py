@@ -42,6 +42,9 @@ class WorkflowRuntime:
         return {a.mention.lower(): a.role_id for a in self.workflow.agents}
 
     def session_key(self, engine_id: str, channel: str, role: str) -> str:
+        agent = next((a for a in self.workflow.agents if a.role_id == role), None)
+        if agent and (agent.hermes_profile or "").strip():
+            return agent.hermes_profile.strip()
         return f"{engine_id}-{self.workflow.id}-{channel}-{role}"
 
 
@@ -74,8 +77,12 @@ class WorkflowRuntimePool:
                 except Exception as e:
                     logger.warning("Memory ensure failed for %s: %s", wf.id, e)
 
+            active_trk = next((t for t in (wf.trackings or []) if t.is_active), None)
             track_cfg = build_tracker_config(
-                wf.id, wf.tracking_provider, wf.tracking_config
+                wf.id,
+                (active_trk.provider if active_trk else wf.tracking_provider),
+                (active_trk.config if active_trk else wf.tracking_config),
+                connection_id=(active_trk.id if active_trk else ""),
             )
             map_path = Path.home() / ".hermes" / "omc" / f"task_map_{wf.id}.json"
             # Tracker is available on runtime via create_tracker; TaskManager is local map

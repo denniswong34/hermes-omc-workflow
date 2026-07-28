@@ -135,6 +135,38 @@ def _bridge_python() -> str:
     return sys.executable
 
 
+def _stop_conflicting_hermes_gateways() -> list[str]:
+    """Stop Hermes profile gateways that share bot tokens with the OMC bridge."""
+    stopped: list[str] = []
+    try:
+        from core.db import get_db
+        from core.hermes_profiles import default_agent_profile_name, stop_hermes_gateway
+        from core.secrets import agent_has_gateway_credentials
+        from core.workflow.repository import WorkflowRepository
+
+        repo = WorkflowRepository(get_db())
+        for wf in repo.list_active():
+            for ag in wf.agents:
+                identity = getattr(ag, "platform_identity", None) or {}
+                if not any(
+                    agent_has_gateway_credentials(wf.id, ag.id, platform, identity)
+                    for platform in ("discord", "telegram", "slack", "zulip")
+                ):
+                    continue
+                role = (ag.role_id or "").strip().lower()
+                profile = (ag.hermes_profile or "").strip() or default_agent_profile_name(
+                    wf.id, role or "agent"
+                )
+                try:
+                    stop_hermes_gateway(profile)
+                    stopped.append(profile)
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return stopped
+
+
 def start_bridge() -> dict[str, Any]:
     current = bridge_status()
     if current.get("running"):
@@ -144,6 +176,8 @@ def start_bridge() -> dict[str, Any]:
             "pid": current.get("pid"),
             "message": "Bridge already running",
         }
+
+    stopped_gateways = _stop_conflicting_hermes_gateways()
 
     try:
         from core.db import get_db
@@ -194,6 +228,7 @@ def start_bridge() -> dict[str, Any]:
             "pid": proc.pid,
             "python": py,
             "message": "Bridge exited immediately — check bridge.log",
+            "stopped_hermes_gateways": stopped_gateways,
         }
     return {
         "ok": True,
@@ -201,6 +236,7 @@ def start_bridge() -> dict[str, Any]:
         "pid": proc.pid,
         "python": py,
         "message": f"Bridge started (pid {proc.pid})",
+        "stopped_hermes_gateways": stopped_gateways,
     }
 
 

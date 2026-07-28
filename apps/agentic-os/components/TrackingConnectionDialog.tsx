@@ -34,8 +34,32 @@ export function providerDisplayName(provider: string): string {
   return p.charAt(0).toUpperCase() + p.slice(1).toLowerCase();
 }
 
-export function nextTrackingLabel(provider: string): string {
-  return `${providerDisplayName(provider)} #1`;
+export function nextTrackingLabel(
+  provider: string,
+  existing: { provider: string; label: string }[] | string[] = []
+): string {
+  const base = providerDisplayName(provider);
+  const items = existing || [];
+  let sameCount = 0;
+  let maxN = 0;
+  const re = new RegExp(
+    `^${base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s+#(\\d+)$`,
+    "i"
+  );
+  for (const item of items) {
+    if (typeof item === "string") {
+      const m = item.trim().match(re);
+      if (m) maxN = Math.max(maxN, parseInt(m[1], 10));
+      continue;
+    }
+    if (item.provider === provider) {
+      sameCount += 1;
+      const m = (item.label || "").trim().match(re);
+      if (m) maxN = Math.max(maxN, parseInt(m[1], 10));
+    }
+  }
+  const next = Math.max(maxN, sameCount) + 1;
+  return `${base} #${next}`;
 }
 
 export function TrackingConnectionDialog({

@@ -31,19 +31,29 @@ export default function MemoryPage() {
   }
 
   useEffect(() => {
-    (async () => {
+    const boot = async () => {
       try {
+        setErr("");
         const w = await apiGet<{ workflows: Wf[] }>("/api/workflows");
         setWorkflows(w.workflows);
         const first = w.workflows.find((x) => x.is_active) || w.workflows[0];
         if (first) {
           setWfId(first.id);
           await load(first.id);
+        } else {
+          setWfId("");
+          setTasks([]);
+          setHealth({});
         }
       } catch (e) {
         setErr(e instanceof Error ? e.message : String(e));
+        setWorkflows([]);
+        setWfId("");
       }
-    })();
+    };
+    boot();
+    window.addEventListener("omc-project-changed", boot);
+    return () => window.removeEventListener("omc-project-changed", boot);
   }, []);
 
   return (

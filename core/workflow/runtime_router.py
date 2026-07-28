@@ -11,7 +11,7 @@ from adapters.base import ChannelAdapter
 from core.agent_router import AgentRouter
 from core.chat_messages import DEFAULT_MESSAGE_FORMAT, normalize_message_format
 from core.coding import create_coding_registry
-from core.config import ROLE_FILES, load_agent_prompt
+from core.config import load_workflow_agent_prompt
 from core.db.seed import SDLC_CHANNELS
 from core.sdlc_tracker import SDLCTracker
 from core.secrets import build_tracker_config, load_workflow_secrets_into_environ
@@ -28,22 +28,7 @@ _DEFAULT_TICKET_ROLES = {
 
 
 def _load_prompt(agents_dir: Path, role: str, persona_file: str) -> str:
-    try:
-        return load_agent_prompt(agents_dir, role)
-    except Exception:
-        # Fall back to persona file alone (+ shared if present)
-        parts: list[str] = []
-        shared = agents_dir / "_shared"
-        for name in ("sdlc.md", "handoff.md"):
-            p = shared / name
-            if p.exists():
-                parts.append(p.read_text(encoding="utf-8").strip())
-        path = agents_dir / (persona_file or ROLE_FILES.get(role, f"{role}.md"))
-        if path.exists():
-            parts.append(path.read_text(encoding="utf-8").strip())
-        if not parts:
-            return f"You are @{role}."
-        return "\n\n---\n\n".join(parts)
+    return load_workflow_agent_prompt(agents_dir, role, persona_file)
 
 
 def topics_from_runtime(rt: WorkflowRuntime) -> tuple[dict[str, dict], dict[str, str], dict[str, str]]:
@@ -92,13 +77,19 @@ def message_formats_from_runtime(rt: WorkflowRuntime) -> tuple[str, dict[str, st
     return default, by_channel
 
 
-def build_agent_router(rt: WorkflowRuntime, adapter: ChannelAdapter) -> AgentRouter:
+def build_agent_router(
+    rt: WorkflowRuntime,
+    adapter: ChannelAdapter,
+    *,
+    adapters_by_role: dict[str, ChannelAdapter] | None = None,
+) -> AgentRouter:
     """Construct a full AgentRouter for one active workflow."""
     wf = rt.workflow
     load_workflow_secrets_into_environ(wf.id)
 
     topics, topic_by_channel_id, channel_names = topics_from_runtime(rt)
     agent_prompts: dict[str, str] = {}
+    agent_meta: dict[str, dict[str, Any]] = {}
     for ag in wf.agents:
         agent_prompts[ag.role_id.lower()] = _load_prompt(
             rt.agents_dir, ag.role_id.lower(), ag.persona_file
@@ -106,6 +97,15 @@ def build_agent_router(rt: WorkflowRuntime, adapter: ChannelAdapter) -> AgentRou
         # Also index by mention so @SA matches
         mention = (ag.mention or ag.role_id).lower()
         agent_prompts.setdefault(mention, agent_prompts[ag.role_id.lower()])
+        agent_meta[ag.role_id.lower()] = {
+            "id": ag.id,
+            "role_id": ag.role_id,
+            "hermes_profile": ag.hermes_profile or f"omc-{ag.role_id}",
+            "llm_model": ag.llm_model or "",
+            "kind": ag.kind,
+            "reasoning_engine": ag.reasoning_engine,
+            "coding_backend": ag.coding_backend,
+        }
 
     coding_cfg: dict[str, Any] = {
         "default": wf.coding_default or "hermes",
@@ -125,7 +125,13 @@ def build_agent_router(rt: WorkflowRuntime, adapter: ChannelAdapter) -> AgentRou
             coding_cfg["aliases"][ag.role_id.lower()] = ag.coding_backend
 
     coding = create_coding_registry(coding_cfg)
-    track_cfg = build_tracker_config(wf.id, wf.tracking_provider, wf.tracking_config)
+    active_trk = next((t for t in (wf.trackings or []) if t.is_active), None)
+    track_cfg = build_tracker_config(
+        wf.id,
+        (active_trk.provider if active_trk else wf.tracking_provider),
+        (active_trk.config if active_trk else wf.tracking_config),
+        connection_id=(active_trk.id if active_trk else ""),
+    )
     ticket_tracker = create_tracker(track_cfg)
     sdlc = SDLCTracker(
         tracker=ticket_tracker,
@@ -148,6 +154,10 @@ def build_agent_router(rt: WorkflowRuntime, adapter: ChannelAdapter) -> AgentRou
         memory=rt.memory,
         message_format=default_fmt,
         message_format_by_channel=fmt_by_channel,
+        workflow_id=wf.id,
+        agent_meta=agent_meta,
+        adapters_by_role=adapters_by_role or {},
+        runtime=rt,
     )
 
 

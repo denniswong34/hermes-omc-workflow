@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { apiDelete, apiGet, apiPatch, apiPost, apiPut } from "@/lib/api";
+import { apiDelete, apiGet, apiPatch, apiPost } from "@/lib/api";
 import {
   ChatConnectionDialog,
   IconEdit,
@@ -23,6 +23,7 @@ import {
   type AgentDialogForm,
   type PersonaOption,
 } from "@/components/AgentDialog";
+import { HermesSetupDialog, type HermesSetupGuide } from "@/components/HermesSetupDialog";
 
 type Agent = {
   id: string;
@@ -32,8 +33,11 @@ type Agent = {
   kind: string;
   reasoning_engine: string | null;
   coding_backend: string | null;
+  hermes_profile?: string;
+  llm_model?: string;
   persona_file: string;
   mcp_allowlist: string[];
+  gateways?: Record<string, { enabled?: boolean; configured?: boolean }>;
 };
 
 type Chat = {
@@ -65,9 +69,11 @@ type CronJob = {
 };
 
 type TrackingInfo = {
+  id?: string;
   provider: string;
   label: string;
   configured: boolean;
+  is_active?: boolean;
   connection_fields?: ConnField[];
   stored_secrets?: Record<string, boolean>;
   connection_values?: Record<string, string>;
@@ -86,6 +92,7 @@ type Workflow = {
   tracking_provider: string;
   tracking_config: Record<string, unknown>;
   tracking?: TrackingInfo;
+  trackings?: TrackingInfo[];
   agents: Agent[];
   chats: Chat[];
   channels: Channel[];
@@ -199,8 +206,13 @@ export default function WorkflowDetailPage() {
     kind: "persona",
     reasoning_engine: "",
     coding_backend: "hermes",
+    hermes_profile: "",
+    llm_model: "",
   });
   const [agentSaving, setAgentSaving] = useState(false);
+  const [hermesSyncing, setHermesSyncing] = useState(false);
+  const [hermesGuideOpen, setHermesGuideOpen] = useState(false);
+  const [hermesGuide, setHermesGuide] = useState<HermesSetupGuide | null>(null);
   const [platforms, setPlatforms] = useState<string[]>(DEFAULT_PLATFORMS);
   const [fieldsByPlatform, setFieldsByPlatform] =
     useState<Record<string, ConnField[]>>(FALLBACK_FIELDS);
@@ -220,7 +232,7 @@ export default function WorkflowDetailPage() {
   const [trackingDialogOpen, setTrackingDialogOpen] = useState(false);
   const [trackingDialogMode, setTrackingDialogMode] = useState<"add" | "edit">("add");
   const [trackingDialogForm, setTrackingDialogForm] = useState<TrackingConnectionForm>({
-    label: nextTrackingLabel("jira"),
+    label: nextTrackingLabel("jira", []),
     provider: "jira",
     values: {},
   });
@@ -400,24 +412,33 @@ export default function WorkflowDetailPage() {
     }
   }
 
+  function trackingList(): TrackingInfo[] {
+    if (wf?.trackings?.length) return wf.trackings;
+    if (wf?.tracking?.configured) return [wf.tracking];
+    return [];
+  }
+
+  function suggestTrackingLabel(provider: string): string {
+    return nextTrackingLabel(provider, trackingList());
+  }
+
   function openAddTrackingDialog() {
     const provider = trackingProviders[0] || "jira";
     setTrackingDialogMode("add");
     setTrackingDialogForm({
-      label: nextTrackingLabel(provider),
+      label: suggestTrackingLabel(provider),
       provider,
       values: {},
     });
     setTrackingDialogOpen(true);
   }
 
-  function openEditTrackingDialog() {
-    const t = wf?.tracking;
-    if (!t?.configured) return;
+  function openEditTrackingDialog(t: TrackingInfo) {
+    if (!t?.configured || !t.id) return;
     setTrackingDialogMode("edit");
     setTrackingDialogForm({
-      id: "current",
-      label: t.label || nextTrackingLabel(t.provider),
+      id: t.id,
+      label: t.label || suggestTrackingLabel(t.provider),
       provider: t.provider,
       values: { ...(t.connection_values || {}) },
       storedSecrets: t.stored_secrets,
@@ -431,20 +452,28 @@ export default function WorkflowDetailPage() {
     try {
       const fields = fieldsByTracking[form.provider] || [];
       const { config, secrets } = splitFormValues(fields, form.values);
-      const label = form.label.trim() || nextTrackingLabel(form.provider);
-      const updated = await apiPut<Workflow>(`/api/workflows/${id}/tracking`, {
-        provider: form.provider,
-        label,
-        config,
-        secrets,
-      });
+      const label = form.label.trim() || suggestTrackingLabel(form.provider);
+      let updated: Workflow;
+      if (trackingDialogMode === "add") {
+        updated = await apiPost<Workflow>(`/api/workflows/${id}/trackings`, {
+          provider: form.provider,
+          label,
+          config,
+          secrets,
+          activate: trackingList().length === 0,
+        });
+        setMsg(`Added ${label}`);
+      } else if (form.id) {
+        updated = await apiPatch<Workflow>(
+          `/api/workflows/${id}/trackings/${form.id}`,
+          { label, config, secrets }
+        );
+        setMsg(`Updated ${label}`);
+      } else {
+        throw new Error("Missing tracking connection id");
+      }
       setWf(updated);
       setTrackingDialogOpen(false);
-      setMsg(
-        trackingDialogMode === "add"
-          ? `Added ${label}`
-          : `Updated ${label}`
-      );
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -459,7 +488,7 @@ export default function WorkflowDetailPage() {
     const fields = fieldsByTracking[form.provider] || [];
     const { config, secrets } = splitFormValues(fields, form.values);
     const res = await apiPost<{ ok: boolean; message: string }>(
-      `/api/workflows/${id}/tracking/test`,
+      `/api/workflows/${id}/trackings/${form.id}/test`,
       {
         provider: form.provider,
         config,
@@ -469,12 +498,29 @@ export default function WorkflowDetailPage() {
     return { ok: !!res.ok, message: res.message || (res.ok ? "OK" : "Failed") };
   }
 
-  async function removeTracking() {
-    const label = wf?.tracking?.label || wf?.tracking_provider || "tracking";
+  async function activateTracking(t: TrackingInfo) {
+    if (!t.id) return;
+    setError("");
+    try {
+      const updated = await apiPost<Workflow>(
+        `/api/workflows/${id}/trackings/${t.id}/activate`
+      );
+      setWf(updated);
+      setMsg(`Active tracker: ${t.label || t.provider}`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function removeTracking(t: TrackingInfo) {
+    if (!t.id) return;
+    const label = t.label || t.provider || "tracking";
     if (!window.confirm(`Remove ${label} tracking connection?`)) return;
     setError("");
     try {
-      const updated = await apiDelete<Workflow>(`/api/workflows/${id}/tracking`);
+      const updated = await apiDelete<Workflow>(
+        `/api/workflows/${id}/trackings/${t.id}`
+      );
       setWf(updated);
       setMsg("Tracking removed");
     } catch (e) {
@@ -517,6 +563,8 @@ export default function WorkflowDetailPage() {
       kind: "persona",
       reasoning_engine: "",
       coding_backend: wf?.coding_default || "hermes",
+      hermes_profile: first ? `omc-${first}` : "",
+      llm_model: "",
     });
     setAgentDialogOpen(true);
   }
@@ -531,6 +579,8 @@ export default function WorkflowDetailPage() {
       kind: ag.kind === "coding" ? "coding" : "persona",
       reasoning_engine: ag.reasoning_engine || "",
       coding_backend: ag.coding_backend || wf?.coding_default || "hermes",
+      hermes_profile: ag.hermes_profile || `omc-${ag.role_id}`,
+      llm_model: ag.llm_model || "",
     });
     setAgentDialogOpen(true);
   }
@@ -546,6 +596,8 @@ export default function WorkflowDetailPage() {
           kind: form.kind,
           reasoning_engine: form.kind === "persona" ? form.reasoning_engine || null : null,
           coding_backend: form.kind === "coding" ? form.coding_backend : null,
+          hermes_profile: form.hermes_profile || `omc-${form.role_id}`,
+          llm_model: form.llm_model || "",
         });
         setMsg(`Updated @${form.mention}`);
       } else {
@@ -557,6 +609,8 @@ export default function WorkflowDetailPage() {
           persona_file: `${form.role_id}.md`,
           reasoning_engine: form.kind === "persona" ? form.reasoning_engine || null : null,
           coding_backend: form.kind === "coding" ? form.coding_backend : null,
+          hermes_profile: form.hermes_profile || `omc-${form.role_id}`,
+          llm_model: form.llm_model || "",
           create_persona_file: false,
         });
         setMsg(`Added @${form.mention || form.role_id}`);
@@ -575,6 +629,49 @@ export default function WorkflowDetailPage() {
     await apiDelete(`/api/workflows/${id}/agents/${ag.id}`);
     setMsg("Agent removed");
     await load();
+  }
+
+  async function openHermesSetupGuide() {
+    if (!wf?.agents?.length) {
+      setMsg("Add agents before syncing Hermes profiles.");
+      return;
+    }
+    setHermesSyncing(true);
+    setError("");
+    setMsg("");
+    try {
+      const res = await apiPost<HermesSetupGuide>(
+        `/api/workflows/${id}/hermes-profiles/sync`
+      );
+      setHermesGuide(res);
+      setHermesGuideOpen(true);
+      const parts = [
+        res.created ? `${res.created} created` : "",
+        res.updated ? `${res.updated} updated` : "",
+        res.platforms_enabled?.length
+          ? `channels enabled: ${res.platforms_enabled.join(", ")}`
+          : "",
+        res.gateways_started ? `${res.gateways_started} gateways running` : "",
+        res.gateway_errors ? `${res.gateway_errors} gateway errors` : "",
+      ].filter(Boolean);
+      setMsg(
+        `Hermes profiles synced${parts.length ? ` (${parts.join(", ")})` : ""}. ` +
+          "Tokens written, channels enabled in config.yaml, gateways started."
+      );
+      if (!res.ok) {
+        const detail =
+          (res.agents || [])
+            .filter((a) => a.error || a.gateway?.status === "error")
+            .map((a) => `${a.role_id}: ${a.error || a.gateway?.error || "error"}`)
+            .join("; ") || "Some agents failed — see dialog";
+        setError(detail);
+      }
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setHermesSyncing(false);
+    }
   }
 
   function agentEngineLabel(ag: Agent): string {
@@ -632,8 +729,6 @@ export default function WorkflowDetailPage() {
     <div>
       <p>
         <Link href="/workflows">← Workflows</Link>
-        {" · "}
-        <Link href="/connections">Secrets for this workflow</Link>
       </p>
       <h1>{wf.name}</h1>
       {error && <div className="panel error">{error}</div>}
@@ -727,16 +822,14 @@ export default function WorkflowDetailPage() {
           <div>
             <h2 style={{ margin: 0 }}>Tracking</h2>
             <p className="muted" style={{ margin: "0.35rem 0 0" }}>
-              Ticket tracker connection (Jira or Plane). One connection per workflow.
+              Ticket trackers (Jira or Plane). Only one connection is active for sync at a time.
             </p>
           </div>
-          {!wf.tracking?.configured && (
-            <button type="button" onClick={openAddTrackingDialog}>
-              Add tracking connection
-            </button>
-          )}
+          <button type="button" onClick={openAddTrackingDialog}>
+            Add tracking connection
+          </button>
         </div>
-        {!wf.tracking?.configured ? (
+        {trackingList().length === 0 ? (
           <p className="muted">No tracking connection yet. Add Jira or Plane to sync tickets.</p>
         ) : (
           <table className="data-table">
@@ -744,40 +837,53 @@ export default function WorkflowDetailPage() {
               <tr>
                 <th>Label</th>
                 <th>Provider</th>
+                <th>Active</th>
                 <th>Status</th>
                 <th style={{ textAlign: "right" }}>Actions</th>
               </tr>
             </thead>
             <tbody>
-              <tr>
-                <td>{wf.tracking.label || "—"}</td>
-                <td>
-                  <span className="badge">{wf.tracking.provider}</span>
-                </td>
-                <td className="muted">{trackingStatus(wf.tracking)}</td>
-                <td>
-                  <div className="actions">
-                    <button
-                      type="button"
-                      className="icon-btn"
-                      aria-label={`Edit ${wf.tracking.label}`}
-                      title="Edit"
-                      onClick={openEditTrackingDialog}
-                    >
-                      <IconEdit />
-                    </button>
-                    <button
-                      type="button"
-                      className="icon-btn danger"
-                      aria-label={`Remove ${wf.tracking.label}`}
-                      title="Remove"
-                      onClick={removeTracking}
-                    >
-                      <IconTrash />
-                    </button>
-                  </div>
-                </td>
-              </tr>
+              {trackingList().map((t) => (
+                <tr key={t.id || t.label}>
+                  <td>{t.label || "—"}</td>
+                  <td>
+                    <span className="badge">{t.provider}</span>
+                  </td>
+                  <td className="muted">{t.is_active ? "Yes" : "—"}</td>
+                  <td className="muted">{trackingStatus(t)}</td>
+                  <td>
+                    <div className="actions">
+                      {!t.is_active && (
+                        <button
+                          type="button"
+                          onClick={() => activateTracking(t)}
+                          title="Use this tracker for ticket sync"
+                        >
+                          Set active
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className="icon-btn"
+                        aria-label={`Edit ${t.label}`}
+                        title="Edit"
+                        onClick={() => openEditTrackingDialog(t)}
+                      >
+                        <IconEdit />
+                      </button>
+                      <button
+                        type="button"
+                        className="icon-btn danger"
+                        aria-label={`Remove ${t.label}`}
+                        title="Remove"
+                        onClick={() => removeTracking(t)}
+                      >
+                        <IconTrash />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
         )}
@@ -871,7 +977,7 @@ export default function WorkflowDetailPage() {
         fieldsByProvider={fieldsByTracking}
         initial={trackingDialogForm}
         saving={trackingSaving}
-        suggestLabel={nextTrackingLabel}
+        suggestLabel={suggestTrackingLabel}
         onTestConnection={testTrackingConnection}
         onClose={() => setTrackingDialogOpen(false)}
         onSubmit={submitTrackingDialog}
@@ -883,12 +989,26 @@ export default function WorkflowDetailPage() {
             <h2 style={{ margin: 0 }}>Agents / engines</h2>
             <p className="muted" style={{ margin: "0.35rem 0 0" }}>
               Assign personas from the{" "}
-              <Link href="/agents">Personas</Link> page. Configure mention and engine in the dialog.
+              <Link href="/agents">Personas</Link> page. Hermes profiles use short names like{" "}
+              <code>omc-pm</code>. <strong>Sync Hermes profiles</strong> copies portal personas into
+              <code>SOUL.md</code>, updates descriptions, writes OMC bot tokens + allow-all, enables
+              Telegram/Discord in each profile&apos;s <code>config.yaml</code>, stops the OMC bridge
+              if it is running, and starts Hermes gateways (with Windows login auto-start).
             </p>
           </div>
-          <button type="button" onClick={openAddAgentDialog}>
-            Add agent
-          </button>
+          <div className="panel-toolbar-actions">
+            <button
+              type="button"
+              onClick={openHermesSetupGuide}
+              disabled={hermesSyncing || !wf.agents.length}
+              title="Sync SOUL.md + description, write tokens, enable channels, stop OMC bridge, start gateways"
+            >
+              {hermesSyncing ? "Syncing…" : "Sync Hermes profiles"}
+            </button>
+            <button type="button" onClick={openAddAgentDialog}>
+              Add agent
+            </button>
+          </div>
         </div>
         {wf.agents.length === 0 ? (
           <p className="muted">No agents yet. Add a persona to this workflow.</p>
@@ -900,6 +1020,8 @@ export default function WorkflowDetailPage() {
                 <th>Mention</th>
                 <th>Kind</th>
                 <th>Engine</th>
+                <th>Hermes profile</th>
+                <th>Gateways</th>
                 <th style={{ textAlign: "right" }}>Actions</th>
               </tr>
             </thead>
@@ -917,6 +1039,15 @@ export default function WorkflowDetailPage() {
                     <span className="badge">{ag.kind}</span>
                   </td>
                   <td className="muted">{agentEngineLabel(ag)}</td>
+                  <td className="muted" style={{ fontSize: "0.8rem", maxWidth: "14rem", wordBreak: "break-all" }}>
+                    {ag.hermes_profile || `omc-${ag.role_id}`}
+                  </td>
+                  <td className="muted" style={{ fontSize: "0.8rem" }}>
+                    {Object.entries(ag.gateways || {})
+                      .filter(([, g]) => g.enabled || g.configured)
+                      .map(([p]) => p)
+                      .join(", ") || "—"}
+                  </td>
                   <td>
                     <div className="actions">
                       <button
@@ -950,12 +1081,20 @@ export default function WorkflowDetailPage() {
         open={agentDialogOpen}
         title={agentDialogMode === "add" ? "Add agent" : "Edit agent"}
         mode={agentDialogMode}
+        workflowId={id}
         engines={ENGINES}
+        platforms={platforms}
         personas={availablePersonas()}
         initial={agentDialogForm}
         saving={agentSaving}
         onClose={() => setAgentDialogOpen(false)}
         onSubmit={submitAgentDialog}
+      />
+
+      <HermesSetupDialog
+        open={hermesGuideOpen}
+        guide={hermesGuide}
+        onClose={() => setHermesGuideOpen(false)}
       />
 
       <div className="panel" style={{ marginTop: "1rem" }}>

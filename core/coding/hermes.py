@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Optional, Sequence
 
@@ -33,27 +34,25 @@ class HermesBackend(CodingBackend):
         *,
         workspace: str = "",
         session_key: str = "",
+        profile: str = "",
+        model: str = "",
     ) -> str:
         if not self.available():
             raise RuntimeError(
                 "Hermes CLI not found on PATH. Install hermes or fix coding.backends.hermes.command."
             )
-        cmd = list(self.command)
-        # hermes -z <prompt> --resume <session> --safe-mode --yolo
-        # Build as: binary flags..., then we pass prompt via run_command
-        # Prefer reconstructing: hermes -z PROMPT --resume X --safe-mode --yolo
-        base = [cmd[0]]
-        flags_before = []
-        flags_after = ["--safe-mode", "--yolo"]
-        # If command already contains -z, keep structure
-        if "-z" in cmd:
-            # Insert session after -z prompt (handled by custom spawn)
-            pass
-        else:
-            flags_before = ["-z"]
+        session = session_key or profile or f"{self.session_prefix}-default"
+        # Prefer explicit -p so the CLI uses the synced OMC profile (SOUL.md / .env).
+        full_cmd = [self.command[0]]
+        if profile:
+            full_cmd.extend(["-p", profile])
+        full_cmd.extend(["-z", prompt, "--resume", session, "--safe-mode", "--yolo"])
 
-        session = session_key or f"{self.session_prefix}-default"
-        full_cmd = [cmd[0], "-z", prompt, "--resume", session, *flags_after]
+        env = os.environ.copy()
+        if profile:
+            env["HERMES_PROFILE"] = profile
+        if model:
+            env["HERMES_MODEL"] = model
 
         import asyncio
 
@@ -63,6 +62,7 @@ class HermesBackend(CodingBackend):
                 cwd=workspace or None,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=env,
             )
         except FileNotFoundError as e:
             raise RuntimeError("Hermes CLI not found on PATH.") from e

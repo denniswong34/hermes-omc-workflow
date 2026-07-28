@@ -115,6 +115,54 @@ def main() -> None:
     assert r.status_code == 200
     print(" 11. New refresh token works for further rotation")
 
+    # ── AC-6. Expired token rejected ──────────────────────────────
+    r = c.post("/api/auth/magic-link", json={"email": "expired@test.com"})
+    assert r.status_code == 200
+    token_exp = r.json()["token"]
+    # Manually age the record so it's expired
+    import apps.api.auth as auth_mod
+    for k, v in list(auth_mod._magic_links.items()):
+        if v.email == "expired@test.com":
+            v.expires_at = 0  # epoch = well in the past
+            break
+    r = c.post(
+        "/api/auth/magic-link/verify",
+        json={"email": "expired@test.com", "token": token_exp},
+    )
+    assert r.status_code == 401, (
+        f"Expected 401 for expired token, got {r.status_code}: {r.text}"
+    )
+    print("  6b. Expired token correctly rejected (401)")
+
+    # ── AC-14. Production mode hides token ───────────────────────────
+    from apps.api.email import ConsoleEmailProvider, EmailProvider, _provider_cache
+    from apps.api.email import get_email_provider
+
+    class MockProductionProvider(EmailProvider):
+        """A non-ConsoleEmailProvider that captures the email for inspection."""
+        def __init__(self):
+            self.sent: list[tuple[str, str, str]] = []
+        def send_email(self, to: str, subject: str, body_text: str) -> None:
+            self.sent.append((to, subject, body_text))
+            print(f"[MockProductionProvider] To: {to} | Subject: {subject}")
+
+    saved_cache = _provider_cache
+    try:
+        import apps.api.email as email_mod
+        email_mod._provider_cache = MockProductionProvider()
+        r = c.post("/api/auth/magic-link", json={"email": "production@test.com"})
+        assert r.status_code == 200
+        data = r.json()
+        assert data["ok"] is True
+        assert "token" not in data, "Token should NOT be exposed in production mode"
+        assert data["message"].startswith("If the email exists"), (
+            f"Expected non-enumerating message, got: {data['message']}"
+        )
+        assert data["ttl_seconds"] == 900
+        print(" 14. Production mode correctly hides token from response")
+    finally:
+        email_mod._provider_cache = saved_cache
+
     # ── 12. Original /api/auth/login still works ─────────────────────
     r = c.post("/api/auth/login", json={"email": "admin@example.com", "password": "secret"})
     assert r.status_code == 200

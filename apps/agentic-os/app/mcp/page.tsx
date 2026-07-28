@@ -33,7 +33,10 @@ export default function McpPage() {
   }
 
   useEffect(() => {
-    refresh().catch((e) => setError(String(e.message || e)));
+    const run = () => refresh().catch((e) => setError(String(e.message || e)));
+    run();
+    window.addEventListener("omc-project-changed", run);
+    return () => window.removeEventListener("omc-project-changed", run);
   }, []);
 
   async function enable(catalogId: string, enabled: boolean) {

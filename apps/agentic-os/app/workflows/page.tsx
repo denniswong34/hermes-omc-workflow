@@ -31,7 +31,11 @@ export default function WorkflowsPage() {
   }
 
   useEffect(() => {
-    refresh().catch((e) => setError(String(e.message || e)));
+    const run = () => refresh().catch((e) => setError(String(e.message || e)));
+    run();
+    const onProject = () => run();
+    window.addEventListener("omc-project-changed", onProject);
+    return () => window.removeEventListener("omc-project-changed", onProject);
   }, []);
 
   async function toggle(id: string, active: boolean) {
@@ -81,6 +85,10 @@ export default function WorkflowsPage() {
           Templates: {templates.map((t) => t.name).join(", ") || "—"}
         </p>
       </div>
+
+      {workflows.length === 0 && !error && (
+        <div className="panel muted">No workflows in this project yet. Clone the SDLC template above.</div>
+      )}
 
       <table style={{ width: "100%", borderCollapse: "collapse" }}>
         <thead>

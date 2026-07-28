@@ -24,9 +24,15 @@ class TelegramAdapter(ChannelAdapter):
         self,
         bot_token: str,
         channel_map: dict[str, str] | None = None,
+        *,
+        agent_id: str = "",
+        role_id: str = "",
     ):
         self.bot_token = bot_token
         self.channel_map = channel_map or {}
+        self.agent_id = agent_id or ""
+        self.role_id = (role_id or "").lower()
+        self.bot_user_id = ""
         self._msg_handler: Optional[MessageHandler] = None
         self._running = False
         self._task: Optional[asyncio.Task] = None
@@ -37,9 +43,22 @@ class TelegramAdapter(ChannelAdapter):
         if not self.bot_token:
             logger.warning("TelegramAdapter: TELEGRAM_BOT_TOKEN missing")
             return
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{self._base}/getMe") as resp:
+                    data = await resp.json()
+            if data.get("ok") and data.get("result"):
+                self.bot_user_id = str(data["result"].get("id") or "")
+        except Exception as e:
+            logger.warning("Telegram getMe failed: %s", e)
         self._running = True
         self._task = asyncio.create_task(self._poll_loop())
-        logger.info("TelegramAdapter polling started")
+        logger.info(
+            "TelegramAdapter polling started agent=%s role=%s bot=%s",
+            self.agent_id or "-",
+            self.role_id or "-",
+            self.bot_user_id or "-",
+        )
 
     async def stop(self):
         self._running = False
@@ -72,6 +91,17 @@ class TelegramAdapter(ChannelAdapter):
                         user = msg.get("from") or {}
                         if user.get("is_bot"):
                             continue
+                        text = msg.get("text") or ""
+                        chat_type = (chat.get("type") or "").lower()
+                        is_dm = chat_type == "private"
+                        bot_mentioned = False
+                        if self.bot_user_id and f"@{self.bot_user_id}" in text:
+                            bot_mentioned = True
+                        # Telegram entity mentions / @username
+                        for ent in msg.get("entities") or []:
+                            if ent.get("type") in ("mention", "text_mention"):
+                                bot_mentioned = True
+                                break
                         m = Message(
                             id=str(msg.get("message_id", "")),
                             channel_id=str(chat.get("id", "")),
@@ -79,13 +109,19 @@ class TelegramAdapter(ChannelAdapter):
                             author_name=user.get("username")
                             or user.get("first_name")
                             or "user",
-                            content=msg.get("text") or "",
+                            content=text,
                             is_bot=False,
                             reply_to_id=str(
                                 (msg.get("reply_to_message") or {}).get("message_id") or ""
                             )
                             or None,
                             channel_name=chat.get("title") or chat.get("username"),
+                            platform="telegram",
+                            bot_user_id=self.bot_user_id,
+                            agent_id=self.agent_id,
+                            target_role=self.role_id,
+                            is_dm=is_dm,
+                            bot_mentioned=bot_mentioned or is_dm,
                         )
                         self._msg_handler(m)
                 except asyncio.CancelledError:

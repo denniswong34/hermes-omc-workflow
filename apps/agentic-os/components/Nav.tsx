@@ -3,15 +3,16 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
+import { ProjectSwitcher } from "@/components/ProjectSwitcher";
 
 const LINKS = [
   { href: "/", label: "Overview" },
   { href: "/workflows", label: "Workflows" },
+  { href: "/projects", label: "Projects" },
   { href: "/mcp", label: "MCP" },
   { href: "/agents", label: "Personas" },
   { href: "/memory", label: "Memory" },
   { href: "/kanban", label: "Kanban" },
-  { href: "/connections", label: "Secrets" },
 ];
 
 export function Nav() {
@@ -24,6 +25,7 @@ export function Nav() {
         <Link href="/" className="brand" onClick={() => setOpen(false)}>
           OMC Agentic OS
         </Link>
+        <ProjectSwitcher />
         <button
           type="button"
           className="nav-toggle"

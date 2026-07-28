@@ -20,6 +20,9 @@ class AgentRecord:
     persona_file: str
     reasoning_engine: Optional[str] = None
     coding_backend: Optional[str] = None
+    hermes_profile: str = ""
+    llm_model: str = ""
+    platform_identity: dict[str, Any] = field(default_factory=dict)
     tools: list[str] = field(default_factory=list)
     mcp_allowlist: list[str] = field(default_factory=list)
 
@@ -34,6 +37,9 @@ class AgentRecord:
             "persona_file": self.persona_file,
             "reasoning_engine": self.reasoning_engine,
             "coding_backend": self.coding_backend,
+            "hermes_profile": self.hermes_profile,
+            "llm_model": self.llm_model,
+            "platform_identity": self.platform_identity,
             "tools": self.tools,
             "mcp_allowlist": self.mcp_allowlist,
         }
@@ -84,6 +90,26 @@ class ChatRecord:
 
 
 @dataclass
+class TrackingConnectionRecord:
+    id: str
+    workflow_id: str
+    provider: str
+    label: str
+    config: dict[str, Any]
+    is_active: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "workflow_id": self.workflow_id,
+            "provider": self.provider,
+            "label": self.label,
+            "config": self.config,
+            "is_active": self.is_active,
+        }
+
+
+@dataclass
 class CronRecord:
     id: str
     workflow_id: str
@@ -125,9 +151,11 @@ class WorkflowRecord:
     playbooks: dict[str, list[str]]
     agents: list[AgentRecord] = field(default_factory=list)
     chats: list[ChatRecord] = field(default_factory=list)
+    trackings: list[TrackingConnectionRecord] = field(default_factory=list)
     channels: list[ChannelRecord] = field(default_factory=list)
     cron_jobs: list[CronRecord] = field(default_factory=list)
     mcp_servers: list[dict[str, Any]] = field(default_factory=list)
+    project_id: str = ""
     created_at: str = ""
     updated_at: str = ""
 
@@ -137,6 +165,7 @@ class WorkflowRecord:
             "name": self.name,
             "description": self.description,
             "is_active": self.is_active,
+            "project_id": self.project_id,
             "reasoning_engine": self.reasoning_engine,
             "coding_default": self.coding_default,
             "coding_workspace": self.coding_workspace,
@@ -149,6 +178,7 @@ class WorkflowRecord:
             "playbooks": self.playbooks,
             "agents": [a.to_dict() for a in self.agents],
             "chats": [c.to_dict() for c in self.chats],
+            "trackings": [t.to_dict() for t in self.trackings],
             "channels": [c.to_dict() for c in self.channels],
             "cron_jobs": [j.to_dict() for j in self.cron_jobs],
             "mcp_servers": self.mcp_servers,
@@ -174,12 +204,20 @@ class WorkflowRepository:
     def ensure_seeded(self) -> None:
         seed_database(self.db, activate=True)
 
-    def list_workflows(self) -> list[dict[str, Any]]:
+    def list_workflows(self, project_id: str | None = None) -> list[dict[str, Any]]:
         with self.db.connect() as conn:
-            rows = conn.execute(
-                "SELECT id, name, description, is_active, reasoning_engine, memory_provider, "
-                "tracking_provider, created_at, updated_at FROM workflows ORDER BY name"
-            ).fetchall()
+            if project_id:
+                rows = conn.execute(
+                    "SELECT id, name, description, is_active, project_id, reasoning_engine, memory_provider, "
+                    "tracking_provider, created_at, updated_at FROM workflows "
+                    "WHERE project_id = ? ORDER BY name",
+                    (project_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT id, name, description, is_active, project_id, reasoning_engine, memory_provider, "
+                    "tracking_provider, created_at, updated_at FROM workflows ORDER BY name"
+                ).fetchall()
             return [dict(r) | {"is_active": bool(r["is_active"])} for r in rows]
 
     def get_workflow(self, workflow_id: str) -> Optional[WorkflowRecord]:
@@ -190,19 +228,7 @@ class WorkflowRepository:
             if not row:
                 return None
             agents = [
-                AgentRecord(
-                    id=a["id"],
-                    workflow_id=a["workflow_id"],
-                    role_id=a["role_id"],
-                    display_name=a["display_name"],
-                    mention=a["mention"],
-                    kind=a["kind"],
-                    persona_file=a["persona_file"],
-                    reasoning_engine=a["reasoning_engine"],
-                    coding_backend=a["coding_backend"],
-                    tools=_parse(a["tools_json"], []),
-                    mcp_allowlist=_parse(a["mcp_allowlist_json"], []),
-                )
+                self._agent_from_row(a)
                 for a in conn.execute(
                     "SELECT * FROM agents WHERE workflow_id = ? ORDER BY role_id",
                     (workflow_id,),
@@ -219,6 +245,21 @@ class WorkflowRepository:
                 )
                 for c in conn.execute(
                     "SELECT * FROM chats WHERE workflow_id = ?", (workflow_id,)
+                ).fetchall()
+            ]
+            trackings = [
+                TrackingConnectionRecord(
+                    id=t["id"],
+                    workflow_id=t["workflow_id"],
+                    provider=t["provider"],
+                    label=t["label"] or "",
+                    config=_parse(t["config_json"], {}),
+                    is_active=bool(t["is_active"]),
+                )
+                for t in conn.execute(
+                    "SELECT * FROM tracking_connections WHERE workflow_id = ? "
+                    "ORDER BY is_active DESC, label ASC",
+                    (workflow_id,),
                 ).fetchall()
             ]
             chat_platform = {c.id: c.platform for c in chats}
@@ -277,6 +318,7 @@ class WorkflowRepository:
                 name=row["name"],
                 description=row["description"] or "",
                 is_active=bool(row["is_active"]),
+                project_id=row["project_id"] or "",
                 reasoning_engine=row["reasoning_engine"],
                 coding_default=row["coding_default"],
                 coding_workspace=row["coding_workspace"] or "",
@@ -289,6 +331,7 @@ class WorkflowRepository:
                 playbooks=_parse(row["playbooks_json"], {}),
                 agents=agents,
                 chats=chats,
+                trackings=trackings,
                 channels=channels,
                 cron_jobs=cron_jobs,
                 mcp_servers=mcp_servers,
@@ -423,6 +466,16 @@ class WorkflowRepository:
             )
 
     def _agent_from_row(self, row) -> AgentRecord:
+        keys = set(row.keys()) if hasattr(row, "keys") else set()
+        hermes_profile = ""
+        llm_model = ""
+        platform_identity: dict[str, Any] = {}
+        if "hermes_profile" in keys:
+            hermes_profile = row["hermes_profile"] or ""
+        if "llm_model" in keys:
+            llm_model = row["llm_model"] or ""
+        if "platform_identity_json" in keys:
+            platform_identity = _parse(row["platform_identity_json"], {})
         return AgentRecord(
             id=row["id"],
             workflow_id=row["workflow_id"],
@@ -433,6 +486,9 @@ class WorkflowRepository:
             persona_file=row["persona_file"],
             reasoning_engine=row["reasoning_engine"],
             coding_backend=row["coding_backend"],
+            hermes_profile=hermes_profile,
+            llm_model=llm_model,
+            platform_identity=platform_identity,
             tools=_parse(row["tools_json"], []),
             mcp_allowlist=_parse(row["mcp_allowlist_json"], []),
         )
@@ -445,6 +501,9 @@ class WorkflowRepository:
             "persona_file",
             "reasoning_engine",
             "coding_backend",
+            "hermes_profile",
+            "llm_model",
+            "platform_identity",
             "tools",
             "mcp_allowlist",
         }
@@ -456,6 +515,9 @@ class WorkflowRepository:
             if k in ("tools", "mcp_allowlist"):
                 cols.append(f"{k}_json = ?")
                 vals.append(_json(v))
+            elif k == "platform_identity":
+                cols.append("platform_identity_json = ?")
+                vals.append(_json(v or {}))
             else:
                 cols.append(f"{k} = ?")
                 vals.append(v)
@@ -484,6 +546,9 @@ class WorkflowRepository:
         kind = (data.get("kind") or "persona").strip().lower()
         persona_file = (data.get("persona_file") or f"{role_id}.md").strip()
         aid = new_id("ag_")
+        hermes_profile = (data.get("hermes_profile") or f"omc-{role_id}").strip()
+        llm_model = (data.get("llm_model") or "").strip()
+        platform_identity = data.get("platform_identity") or {}
         with self.db.connect() as conn:
             existing = conn.execute(
                 "SELECT id FROM agents WHERE workflow_id = ? AND role_id = ?",
@@ -493,8 +558,9 @@ class WorkflowRepository:
                 raise ValueError(f"Agent role_id already exists: {role_id}")
             conn.execute(
                 "INSERT INTO agents(id, workflow_id, role_id, display_name, mention, kind, persona_file, "
-                "reasoning_engine, coding_backend, tools_json, mcp_allowlist_json) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "reasoning_engine, coding_backend, hermes_profile, llm_model, platform_identity_json, "
+                "tools_json, mcp_allowlist_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     aid,
                     workflow_id,
@@ -505,6 +571,9 @@ class WorkflowRepository:
                     persona_file,
                     data.get("reasoning_engine"),
                     data.get("coding_backend"),
+                    hermes_profile,
+                    llm_model,
+                    _json(platform_identity),
                     _json(data.get("tools") or []),
                     _json(data.get("mcp_allowlist") or []),
                 ),
@@ -609,6 +678,173 @@ class WorkflowRepository:
             if cur.rowcount == 0:
                 raise ValueError("chat not found")
 
+    def _tracking_from_row(self, row) -> TrackingConnectionRecord:
+        return TrackingConnectionRecord(
+            id=row["id"],
+            workflow_id=row["workflow_id"],
+            provider=row["provider"],
+            label=row["label"] or "",
+            config=_parse(row["config_json"], {}),
+            is_active=bool(row["is_active"]),
+        )
+
+    def _sync_active_tracking_cache(
+        self, conn, workflow_id: str
+    ) -> None:
+        """Keep workflows.tracking_* synced with the active connection."""
+        row = conn.execute(
+            "SELECT * FROM tracking_connections "
+            "WHERE workflow_id = ? AND is_active = 1 LIMIT 1",
+            (workflow_id,),
+        ).fetchone()
+        now = _now()
+        if not row:
+            conn.execute(
+                "UPDATE workflows SET tracking_provider = 'none', "
+                "tracking_config_json = '{}', updated_at = ? WHERE id = ?",
+                (now, workflow_id),
+            )
+            return
+        conn.execute(
+            "UPDATE workflows SET tracking_provider = ?, tracking_config_json = ?, "
+            "updated_at = ? WHERE id = ?",
+            (row["provider"], row["config_json"], now, workflow_id),
+        )
+
+    def add_tracking(self, workflow_id: str, data: dict[str, Any]) -> dict[str, Any]:
+        from core.secrets import TRACKING_PROVIDERS
+
+        if not self.get_workflow(workflow_id):
+            raise ValueError("workflow not found")
+        provider = (data.get("provider") or "").strip().lower()
+        if provider not in TRACKING_PROVIDERS:
+            raise ValueError(f"provider must be one of {TRACKING_PROVIDERS}")
+        label = (data.get("label") or f"{provider[:1].upper()}{provider[1:]} #1").strip()
+        tid = new_id("trk_")
+        activate = bool(data.get("is_active", False))
+        with self.db.connect() as conn:
+            active_count = conn.execute(
+                "SELECT COUNT(1) AS n FROM tracking_connections "
+                "WHERE workflow_id = ? AND is_active = 1",
+                (workflow_id,),
+            ).fetchone()
+            if activate or not active_count or int(active_count["n"] or 0) == 0:
+                activate = True
+                conn.execute(
+                    "UPDATE tracking_connections SET is_active = 0 WHERE workflow_id = ?",
+                    (workflow_id,),
+                )
+            conn.execute(
+                "INSERT INTO tracking_connections"
+                "(id, workflow_id, provider, label, config_json, is_active) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    tid,
+                    workflow_id,
+                    provider,
+                    label,
+                    _json(data.get("config") or {}),
+                    1 if activate else 0,
+                ),
+            )
+            if activate:
+                self._sync_active_tracking_cache(conn, workflow_id)
+        return {
+            "id": tid,
+            "workflow_id": workflow_id,
+            "provider": provider,
+            "label": label,
+            "config": data.get("config") or {},
+            "is_active": activate,
+        }
+
+    def update_tracking(
+        self, workflow_id: str, tracking_id: str, patch: dict[str, Any]
+    ) -> dict[str, Any]:
+        from core.secrets import TRACKING_PROVIDERS
+
+        cols = []
+        vals: list[Any] = []
+        if "provider" in patch and patch["provider"] is not None:
+            provider = str(patch["provider"]).strip().lower()
+            if provider not in TRACKING_PROVIDERS:
+                raise ValueError(f"provider must be one of {TRACKING_PROVIDERS}")
+            cols.append("provider = ?")
+            vals.append(provider)
+        if "label" in patch and patch["label"] is not None:
+            cols.append("label = ?")
+            vals.append(patch["label"])
+        if "config" in patch and patch["config"] is not None:
+            cols.append("config_json = ?")
+            vals.append(_json(patch["config"]))
+        if not cols:
+            raise ValueError("no fields")
+        vals.extend([tracking_id, workflow_id])
+        with self.db.connect() as conn:
+            cur = conn.execute(
+                f"UPDATE tracking_connections SET {', '.join(cols)} "
+                "WHERE id = ? AND workflow_id = ?",
+                vals,
+            )
+            if cur.rowcount == 0:
+                raise ValueError("tracking connection not found")
+            row = conn.execute(
+                "SELECT * FROM tracking_connections WHERE id = ?", (tracking_id,)
+            ).fetchone()
+            if row and bool(row["is_active"]):
+                self._sync_active_tracking_cache(conn, workflow_id)
+        return self._tracking_from_row(row).to_dict()
+
+    def delete_tracking(self, workflow_id: str, tracking_id: str) -> None:
+        with self.db.connect() as conn:
+            row = conn.execute(
+                "SELECT is_active FROM tracking_connections "
+                "WHERE id = ? AND workflow_id = ?",
+                (tracking_id, workflow_id),
+            ).fetchone()
+            if not row:
+                raise ValueError("tracking connection not found")
+            was_active = bool(row["is_active"])
+            conn.execute(
+                "DELETE FROM tracking_connections WHERE id = ? AND workflow_id = ?",
+                (tracking_id, workflow_id),
+            )
+            if was_active:
+                nxt = conn.execute(
+                    "SELECT id FROM tracking_connections WHERE workflow_id = ? "
+                    "ORDER BY label ASC LIMIT 1",
+                    (workflow_id,),
+                ).fetchone()
+                if nxt:
+                    conn.execute(
+                        "UPDATE tracking_connections SET is_active = 1 WHERE id = ?",
+                        (nxt["id"],),
+                    )
+                self._sync_active_tracking_cache(conn, workflow_id)
+
+    def set_active_tracking(self, workflow_id: str, tracking_id: str) -> dict[str, Any]:
+        with self.db.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM tracking_connections "
+                "WHERE id = ? AND workflow_id = ?",
+                (tracking_id, workflow_id),
+            ).fetchone()
+            if not row:
+                raise ValueError("tracking connection not found")
+            conn.execute(
+                "UPDATE tracking_connections SET is_active = 0 WHERE workflow_id = ?",
+                (workflow_id,),
+            )
+            conn.execute(
+                "UPDATE tracking_connections SET is_active = 1 WHERE id = ?",
+                (tracking_id,),
+            )
+            self._sync_active_tracking_cache(conn, workflow_id)
+            row = conn.execute(
+                "SELECT * FROM tracking_connections WHERE id = ?", (tracking_id,)
+            ).fetchone()
+        return self._tracking_from_row(row).to_dict()
+
     def add_channel(self, workflow_id: str, data: dict[str, Any]) -> dict[str, Any]:
         wf = self.get_workflow(workflow_id)
         if not wf:
@@ -657,8 +893,24 @@ class WorkflowRepository:
             ).fetchall()
             return [dict(r) | {"is_system": bool(r["is_system"])} for r in rows]
 
-    def clone_from_template(self, template_id: str, name: str) -> WorkflowRecord:
-        wf_id = clone_template(self.db, template_id, name, activate=False)
+    def clone_from_template(
+        self,
+        template_id: str,
+        name: str,
+        *,
+        project_id: str,
+        coding_workspace: str | None = None,
+    ) -> WorkflowRecord:
+        if not project_id:
+            raise ValueError("Create a project first")
+        wf_id = clone_template(
+            self.db,
+            template_id,
+            name,
+            activate=False,
+            project_id=project_id,
+            coding_workspace=coding_workspace,
+        )
         wf = self.get_workflow(wf_id)
         assert wf
         return wf
@@ -688,6 +940,8 @@ class WorkflowRepository:
                     "persona_file": a.persona_file,
                     "reasoning_engine": a.reasoning_engine,
                     "coding_backend": a.coding_backend,
+                    "hermes_profile": a.hermes_profile,
+                    "llm_model": a.llm_model,
                     "tools": a.tools,
                     "mcp_allowlist": a.mcp_allowlist,
                 }

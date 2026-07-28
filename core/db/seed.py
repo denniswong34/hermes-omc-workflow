@@ -157,20 +157,15 @@ def seed_database(db: Database, activate: bool = True) -> dict[str, str]:
                 ),
             )
 
-        # Default workflow instance if none
+        # Workflows are created explicitly (clone) under a project — do not auto-seed instances
         existing = conn.execute("SELECT id FROM workflows LIMIT 1").fetchone()
-        wf_id = None
-        if not existing:
-            wf_id = clone_template_into_conn(conn, tpl_id, name="SDLC Company", activate=activate)
-        else:
-            wf_id = existing["id"]
-            if activate:
-                # ensure at least one active if requested and none active
-                active = conn.execute(
-                    "SELECT id FROM workflows WHERE is_active = 1 LIMIT 1"
-                ).fetchone()
-                if not active:
-                    conn.execute("UPDATE workflows SET is_active = 1 WHERE id = ?", (wf_id,))
+        wf_id = existing["id"] if existing else None
+        if wf_id and activate:
+            active = conn.execute(
+                "SELECT id FROM workflows WHERE is_active = 1 LIMIT 1"
+            ).fetchone()
+            if not active:
+                conn.execute("UPDATE workflows SET is_active = 1 WHERE id = ?", (wf_id,))
 
         conn.execute(
             "INSERT INTO settings(key, value) VALUES('max_active_workflows', '5') "
@@ -190,6 +185,8 @@ def clone_template_into_conn(
     template_id: str,
     name: str,
     activate: bool = False,
+    project_id: str | None = None,
+    coding_workspace: str | None = None,
 ) -> str:
     row = conn.execute(
         "SELECT payload_json FROM templates WHERE id = ?", (template_id,)
@@ -197,27 +194,45 @@ def clone_template_into_conn(
     if not row:
         raise ValueError(f"Template not found: {template_id}")
     payload = json.loads(row["payload_json"])
-    return _insert_workflow_from_payload(conn, name, payload, activate=activate)
+    return _insert_workflow_from_payload(
+        conn,
+        name,
+        payload,
+        activate=activate,
+        project_id=project_id,
+        coding_workspace=coding_workspace,
+    )
 
 
 def _insert_workflow_from_payload(
-    conn, name: str, payload: dict[str, Any], activate: bool = False
+    conn,
+    name: str,
+    payload: dict[str, Any],
+    activate: bool = False,
+    project_id: str | None = None,
+    coding_workspace: str | None = None,
 ) -> str:
     now = _now()
     wf_id = new_id("wf_")
+    workspace = (
+        coding_workspace
+        if coding_workspace is not None
+        else payload.get("coding_workspace", "")
+    )
     conn.execute(
-        "INSERT INTO workflows(id, name, description, is_active, reasoning_engine, coding_default, "
+        "INSERT INTO workflows(id, name, description, is_active, project_id, reasoning_engine, coding_default, "
         "coding_workspace, memory_provider, memory_config_json, tracking_provider, tracking_config_json, "
         "routes_json, status_authority_json, playbooks_json, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             wf_id,
             name,
             payload.get("description", ""),
             1 if activate else 0,
+            project_id,
             payload.get("reasoning_engine", "hermes"),
             payload.get("coding_default", "hermes"),
-            payload.get("coding_workspace", ""),
+            workspace or "",
             payload.get("memory_provider", "hermes"),
             _json(payload.get("memory_config") or {}),
             payload.get("tracking_provider", "none"),
@@ -231,20 +246,26 @@ def _insert_workflow_from_payload(
     )
 
     for ag in payload.get("agents") or []:
+        role_id = ag["role_id"]
+        hermes_profile = (ag.get("hermes_profile") or f"omc-{role_id}").strip()
         conn.execute(
             "INSERT INTO agents(id, workflow_id, role_id, display_name, mention, kind, persona_file, "
-            "reasoning_engine, coding_backend, tools_json, mcp_allowlist_json) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "reasoning_engine, coding_backend, hermes_profile, llm_model, platform_identity_json, "
+            "tools_json, mcp_allowlist_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 new_id("ag_"),
                 wf_id,
-                ag["role_id"],
-                ag.get("display_name") or ag["role_id"],
-                ag.get("mention") or ag["role_id"],
+                role_id,
+                ag.get("display_name") or role_id,
+                ag.get("mention") or role_id,
                 ag.get("kind") or "persona",
-                ag.get("persona_file") or f"{ag['role_id']}.md",
+                ag.get("persona_file") or f"{role_id}.md",
                 ag.get("reasoning_engine"),
                 ag.get("coding_backend"),
+                hermes_profile,
+                (ag.get("llm_model") or "").strip(),
+                _json(ag.get("platform_identity") or {}),
                 _json(ag.get("tools") or []),
                 _json(ag.get("mcp_allowlist") or []),
             ),
@@ -311,8 +332,20 @@ def _insert_workflow_from_payload(
     return wf_id
 
 
-def clone_template(db: Database, template_id: str, name: str, activate: bool = False) -> str:
+def clone_template(
+    db: Database,
+    template_id: str,
+    name: str,
+    activate: bool = False,
+    project_id: str | None = None,
+    coding_workspace: str | None = None,
+) -> str:
     with db.connect() as conn:
-        # Deactivate others only if activating and we want exclusive? Multi-active allowed —
-        # just set this one's flag; conflict check happens in workflow service.
-        return clone_template_into_conn(conn, template_id, name, activate=activate)
+        return clone_template_into_conn(
+            conn,
+            template_id,
+            name,
+            activate=activate,
+            project_id=project_id,
+            coding_workspace=coding_workspace,
+        )
